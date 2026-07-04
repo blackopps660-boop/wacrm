@@ -1,8 +1,17 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { toast } from 'sonner';
-import { Loader2, Sparkles, CheckCircle2, Trash2, Eye, EyeOff, Zap } from 'lucide-react';
+import {
+  Loader2,
+  Sparkles,
+  CheckCircle2,
+  Trash2,
+  Eye,
+  EyeOff,
+  Zap,
+  Info,
+} from 'lucide-react';
 import { useAuth } from '@/hooks/use-auth';
 import { canEditSettings } from '@/lib/auth/roles';
 import { Button } from '@/components/ui/button';
@@ -64,16 +73,33 @@ const KEY_PLACEHOLDER: Record<AiProvider, string> = {
   anthropic: 'sk-ant-...',
 };
 
-export function AiConfig() {
+interface AiConfigProps {
+  /** null when creating a brand-new agent. */
+  agentId: string | null;
+  /** Whether this agent is the account's default — auto-reply, the
+   *  webhook's new-conversation routing, and inbox draft only ever use
+   *  the default agent's settings, so a non-default agent's Behaviour/
+   *  Actions/Knowledge base sections are inert until promoted. */
+  isDefault: boolean;
+  /** Called after a successful create or update, with the agent's id
+   *  (a fresh one for a create) so the parent can switch to editing it
+   *  and refresh the agents list. */
+  onSaved: (agentId: string) => void;
+  /** Called after a successful delete. */
+  onDeleted: () => void;
+}
+
+export function AiConfig({ agentId, isDefault, onSaved, onDeleted }: AiConfigProps) {
   const { accountId, accountRole, profileLoading } = useAuth();
   const canEdit = accountRole ? canEditSettings(accountRole) : false;
 
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(!!agentId);
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
   const [removing, setRemoving] = useState(false);
 
   const [configured, setConfigured] = useState(false);
+  const [name, setName] = useState('New Agent');
   const [provider, setProvider] = useState<AiProvider>('openai');
   const [model, setModel] = useState(AI_PROVIDER_DEFAULT_MODEL.openai);
   const [apiKey, setApiKey] = useState('');
@@ -92,58 +118,71 @@ export function AiConfig() {
     useState<'ai' | 'human'>('human');
   const [actions, setActions] = useState<AiActionsConfig>(DISABLED_ACTIONS);
 
-  // Guard keyed on the account (not a bare boolean) so an in-place
-  // account switch — ownership transfer, multi-account membership —
-  // refetches instead of showing the previous account's config. Mirrors
-  // the loadedAccountIdRef pattern in whatsapp-config.tsx.
-  const loadedAccountIdRef = useRef<string | null>(null);
-
-  const fetchConfig = useCallback(async () => {
+  const fetchConfig = useCallback(async (id: string) => {
     setLoading(true);
     try {
-      const res = await fetch('/api/ai/config');
+      const res = await fetch(`/api/ai/agents/${id}`);
       const data = await res.json();
       if (!res.ok) {
-        toast.error(data.error ?? 'Failed to load AI configuration');
+        toast.error(data.error ?? 'Failed to load agent');
         return;
       }
-      if (data.configured) {
-        setConfigured(true);
-        setProvider(data.provider);
-        setModel(data.model);
-        setSystemPrompt(data.system_prompt ?? '');
-        setIsActive(data.is_active);
-        setAutoReplyEnabled(data.auto_reply_enabled);
-        // A stored NULL is the deliberate "unlimited" state — keep it as
-        // null rather than defaulting it back to a number.
-        setMaxPerConversation(
-          typeof data.auto_reply_max_per_conversation === 'number'
-            ? data.auto_reply_max_per_conversation
-            : null,
-        );
-        setDefaultNewConversationOwner(
-          data.default_new_conversation_owner === 'ai' ? 'ai' : 'human',
-        );
-        setActions(normalizeActionsFromResponse(data.actions));
-        setHasStoredKey(Boolean(data.has_key));
-        setApiKey(data.has_key ? MASKED_KEY : '');
-        setKeyEdited(false);
-        setHasStoredEmbeddingsKey(Boolean(data.has_embeddings_key));
-        setEmbeddingsKey(data.has_embeddings_key ? MASKED_KEY : '');
-        setEmbeddingsKeyEdited(false);
-      }
+      setConfigured(true);
+      setName(data.name ?? 'New Agent');
+      setProvider(data.provider);
+      setModel(data.model);
+      setSystemPrompt(data.system_prompt ?? '');
+      setIsActive(data.is_active);
+      setAutoReplyEnabled(data.auto_reply_enabled);
+      // A stored NULL is the deliberate "unlimited" state — keep it as
+      // null rather than defaulting it back to a number.
+      setMaxPerConversation(
+        typeof data.auto_reply_max_per_conversation === 'number'
+          ? data.auto_reply_max_per_conversation
+          : null,
+      );
+      setDefaultNewConversationOwner(
+        data.default_new_conversation_owner === 'ai' ? 'ai' : 'human',
+      );
+      setActions(normalizeActionsFromResponse(data.actions));
+      setHasStoredKey(Boolean(data.has_key));
+      setApiKey(data.has_key ? MASKED_KEY : '');
+      setKeyEdited(false);
+      setHasStoredEmbeddingsKey(Boolean(data.has_embeddings_key));
+      setEmbeddingsKey(data.has_embeddings_key ? MASKED_KEY : '');
+      setEmbeddingsKeyEdited(false);
     } catch {
-      toast.error('Failed to load AI configuration');
+      toast.error('Failed to load agent');
     } finally {
       setLoading(false);
     }
   }, []);
 
   useEffect(() => {
-    if (!accountId || loadedAccountIdRef.current === accountId) return;
-    loadedAccountIdRef.current = accountId;
-    void fetchConfig();
-  }, [accountId, fetchConfig]);
+    if (agentId) {
+      void fetchConfig(agentId);
+    } else {
+      // Creating a new agent — reset to defaults rather than showing
+      // whatever the previously-selected agent left behind.
+      setConfigured(false);
+      setName('New Agent');
+      setProvider('openai');
+      setModel(AI_PROVIDER_DEFAULT_MODEL.openai);
+      setApiKey('');
+      setKeyEdited(false);
+      setHasStoredKey(false);
+      setEmbeddingsKey('');
+      setEmbeddingsKeyEdited(false);
+      setHasStoredEmbeddingsKey(false);
+      setSystemPrompt('');
+      setIsActive(false);
+      setAutoReplyEnabled(false);
+      setMaxPerConversation(3);
+      setDefaultNewConversationOwner('human');
+      setActions(DISABLED_ACTIONS);
+      setLoading(false);
+    }
+  }, [agentId, fetchConfig]);
 
   // Swap the model default when the provider changes, unless the user
   // typed a custom model.
@@ -163,6 +202,7 @@ export function AiConfig() {
     embeddingsKeyEdited ? embeddingsKey.trim() || null : undefined;
 
   const buildBody = () => ({
+    name: name.trim(),
     provider,
     model: model.trim(),
     api_key: keyPayload(),
@@ -198,6 +238,10 @@ export function AiConfig() {
   };
 
   const handleSave = async () => {
+    if (!name.trim()) {
+      toast.error('Give this agent a name.');
+      return;
+    }
     if (!model.trim()) {
       toast.error('Enter a model name.');
       return;
@@ -208,15 +252,18 @@ export function AiConfig() {
     }
     setSaving(true);
     try {
-      const res = await fetch('/api/ai/config', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(buildBody()),
-      });
+      const res = await fetch(
+        agentId ? `/api/ai/agents/${agentId}` : '/api/ai/agents',
+        {
+          method: agentId ? 'PATCH' : 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(buildBody()),
+        },
+      );
       const data = await res.json();
       if (res.ok) {
-        toast.success('AI assistant saved.');
-        await fetchConfig();
+        toast.success(agentId ? 'Agent saved.' : 'Agent created.');
+        onSaved(agentId ?? data.id);
       } else {
         toast.error(data.error ?? 'Failed to save.');
       }
@@ -228,20 +275,13 @@ export function AiConfig() {
   };
 
   const handleRemove = async () => {
+    if (!agentId) return;
     setRemoving(true);
     try {
-      const res = await fetch('/api/ai/config', { method: 'DELETE' });
+      const res = await fetch(`/api/ai/agents/${agentId}`, { method: 'DELETE' });
       if (res.ok) {
-        toast.success('AI configuration removed.');
-        setConfigured(false);
-        setHasStoredKey(false);
-        setApiKey('');
-        setKeyEdited(false);
-        setIsActive(false);
-        setAutoReplyEnabled(false);
-        setSystemPrompt('');
-        setDefaultNewConversationOwner('human');
-        setActions(DISABLED_ACTIONS);
+        toast.success('Agent removed.');
+        onDeleted();
       } else {
         const data = await res.json();
         toast.error(data.error ?? 'Failed to remove.');
@@ -266,14 +306,26 @@ export function AiConfig() {
   return (
     <div>
       <SettingsPanelHead
-        title="Agent setup"
-        description="Bring your own OpenAI or Anthropic key. wacrm calls the provider directly with your key — no per-seat AI fees, and your data stays yours. This powers AI-drafted replies in the inbox, the auto-reply bot, and the Playground."
+        title={agentId ? 'Agent setup' : 'Create agent'}
+        description="Bring your own OpenAI or Anthropic key. wacrm calls the provider directly with your key — no per-seat AI fees, and your data stays yours."
       />
 
       {!canEdit && (
         <p className="mb-4 rounded-md border border-border bg-muted/40 px-3 py-2 text-sm text-muted-foreground">
-          Only admins and owners can change the AI configuration.
+          Only admins and owners can change agent configuration.
         </p>
+      )}
+
+      {configured && !isDefault && (
+        <div className="mb-4 flex items-start gap-2 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-600 dark:text-amber-400">
+          <Info className="mt-0.5 h-4 w-4 shrink-0" />
+          <p>
+            This isn&apos;t your default agent. Auto-reply, new-conversation
+            routing, and the knowledge base only use the default agent — set
+            this one as default from the agents list to make its Behaviour,
+            Actions, and Knowledge base settings take effect.
+          </p>
+        </div>
       )}
 
       <div className="space-y-6">
@@ -288,6 +340,17 @@ export function AiConfig() {
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
+            <div className="space-y-2">
+              <Label htmlFor="ai-name">Agent name</Label>
+              <Input
+                id="ai-name"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder="e.g. Support Bot"
+                disabled={disabled}
+              />
+            </div>
+
             <div className="grid gap-4 sm:grid-cols-2">
               <div className="space-y-2">
                 <Label>Provider</Label>
@@ -297,7 +360,9 @@ export function AiConfig() {
                   disabled={disabled}
                 >
                   <SelectTrigger>
-                    <SelectValue />
+                    <SelectValue>
+                      {(v: AiProvider) => PROVIDER_LABEL[v] ?? v}
+                    </SelectValue>
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value="openai">{PROVIDER_LABEL.openai}</SelectItem>
@@ -400,7 +465,8 @@ export function AiConfig() {
                 (text-embedding-3-small)
                 {provider === 'openai' ? ' — can be the same key as above' : ''}.
                 Leave blank to use keyword search instead. Clear it to turn
-                semantic search off.
+                semantic search off.{' '}
+                {!isDefault && 'Only takes effect if this agent is the default.'}
               </p>
             </div>
           </CardContent>
@@ -483,7 +549,9 @@ export function AiConfig() {
                   disabled={disabled}
                 >
                   <SelectTrigger className="w-32">
-                    <SelectValue />
+                    <SelectValue>
+                      {(v: 'ai' | 'human') => (v === 'ai' ? 'AI agent' : 'Agent')}
+                    </SelectValue>
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value="human">Agent</SelectItem>
@@ -585,7 +653,7 @@ export function AiConfig() {
         />
 
         <div className="flex items-center justify-between">
-          {configured ? (
+          {agentId ? (
             <Button
               variant="ghost"
               onClick={handleRemove}
@@ -605,7 +673,7 @@ export function AiConfig() {
 
           <Button onClick={handleSave} disabled={disabled}>
             {saving && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-            Save
+            {agentId ? 'Save' : 'Create agent'}
           </Button>
         </div>
       </div>

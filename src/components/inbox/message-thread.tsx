@@ -262,15 +262,22 @@ export function MessageThread({
 
   // AI agent availability — any member can read this endpoint (it's
   // designed for exactly this: "so the inbox/settings can reflect
-  // whether AI is set up", per its own docstring).
+  // whether AI is set up"). An account can have several agents
+  // (migration 043); the assign dropdown's "AI Agent" option reflects
+  // whichever one is the *default*, since that's the only one
+  // auto-reply/routing actually use.
   useEffect(() => {
     let cancelled = false;
-    fetch("/api/ai/config")
+    fetch("/api/ai/agents")
       .then((res) => res.json())
       .then((data) => {
         if (cancelled) return;
+        const agents = Array.isArray(data.agents) ? data.agents : [];
+        const defaultAgent = agents.find(
+          (a: { isDefault?: boolean }) => a.isDefault,
+        );
         setAiAgentAvailable(
-          !!data.configured && !!data.is_active && !!data.auto_reply_enabled,
+          !!defaultAgent?.isActive && !!defaultAgent?.autoReplyEnabled,
         );
       })
       .catch(() => {

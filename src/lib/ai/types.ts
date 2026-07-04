@@ -25,11 +25,20 @@ export interface AiActionsConfig {
 }
 
 /**
- * Account AI setup, decrypted and ready to use. Produced by
+ * One agent's AI setup, decrypted and ready to use. Produced by
  * `loadAiConfig` — `apiKey` is the plaintext BYO provider key
  * (stored AES-256-GCM-encrypted at rest).
+ *
+ * An account can have several agents (migration 043) — `id`/`name`
+ * identify which one. Auto-reply, the webhook's new-conversation
+ * routing, and inbox draft all use whichever agent is the account's
+ * *default* (`accounts.default_ai_config_id`), loaded via
+ * `loadDefaultAiConfig`; a non-default agent's settings are inert
+ * until it's promoted to default.
  */
 export interface AiConfig {
+  id: string
+  name: string
   provider: AiProvider
   model: string
   apiKey: string

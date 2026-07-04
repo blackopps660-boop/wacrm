@@ -13,7 +13,15 @@ interface Turn {
   handoff?: boolean;
 }
 
-export function AiPlayground({ onGoToSetup }: { onGoToSetup?: () => void }) {
+export function AiPlayground({
+  agentId,
+  onGoToSetup,
+}: {
+  /** Which agent to test — omitted falls back to the account's
+   *  default agent (an account can have several since migration 043). */
+  agentId?: string | null;
+  onGoToSetup?: () => void;
+}) {
   const [turns, setTurns] = useState<Turn[]>([]);
   const [input, setInput] = useState('');
   const [sending, setSending] = useState(false);
@@ -22,6 +30,12 @@ export function AiPlayground({ onGoToSetup }: { onGoToSetup?: () => void }) {
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
   }, [turns, sending]);
+
+  // Switching which agent is being tested starts a fresh transcript —
+  // continuing the old one would mix two agents' replies in one chat.
+  useEffect(() => {
+    setTurns([]);
+  }, [agentId]);
 
   const send = async () => {
     const text = input.trim();
@@ -38,6 +52,7 @@ export function AiPlayground({ onGoToSetup }: { onGoToSetup?: () => void }) {
         // Send only role+content — the server ignores anything else.
         body: JSON.stringify({
           messages: next.map((t) => ({ role: t.role, content: t.content })),
+          agent_id: agentId ?? undefined,
         }),
       });
       const data = await res.json().catch(() => ({}));

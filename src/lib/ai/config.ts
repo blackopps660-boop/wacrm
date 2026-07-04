@@ -3,6 +3,8 @@ import { decrypt } from '@/lib/whatsapp/encryption'
 import type { AiActionSetting, AiActionsConfig, AiConfig } from './types'
 
 interface AiConfigRow {
+  id: string
+  name: string
   provider: 'openai' | 'anthropic'
   model: string
   api_key: string
@@ -16,7 +18,7 @@ interface AiConfigRow {
 }
 
 const CONFIG_COLUMNS =
-  'provider, model, api_key, system_prompt, is_active, auto_reply_enabled, auto_reply_max_per_conversation, embeddings_api_key, default_new_conversation_owner, actions'
+  'id, name, provider, model, api_key, system_prompt, is_active, auto_reply_enabled, auto_reply_max_per_conversation, embeddings_api_key, default_new_conversation_owner, actions'
 
 function normalizeActionSetting(raw: unknown): AiActionSetting {
   const obj = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {}
@@ -48,36 +50,7 @@ export function hasAnyActionEnabled(actions: AiActionsConfig): boolean {
   return actions.updateTags.enabled || actions.updateContactFields.enabled || actions.triggerAutomations.enabled
 }
 
-/**
- * Load and decrypt the account's AI config for *use* (draft or
- * auto-reply). Returns `null` when there's no row or the master switch
- * (`is_active`) is off — both mean "AI is not available", which callers
- * treat identically. Throws only if the stored key can't be decrypted
- * (mismatched `ENCRYPTION_KEY`), so that distinct failure surfaces
- * rather than looking like "not configured".
- *
- * Works with any client: pass the RLS-scoped SSR client from a
- * dashboard route, or the service-role admin client from the webhook.
- */
-export async function loadAiConfig(
-  db: SupabaseClient,
-  accountId: string,
-  opts: { requireActive?: boolean } = {},
-): Promise<AiConfig | null> {
-  const { requireActive = true } = opts
-  const { data, error } = await db
-    .from('ai_configs')
-    .select(CONFIG_COLUMNS)
-    .eq('account_id', accountId)
-    .maybeSingle()
-
-  if (error) throw error
-  if (!data) return null
-
-  const row = data as AiConfigRow
-  // The Playground passes requireActive:false so an admin can test the
-  // agent before flipping the master switch on.
-  if (requireActive && !row.is_active) return null
+function rowToConfig(row: AiConfigRow, accountId: string): AiConfig | null {
   // Defensive: the column is NOT NULL, but a partial write / manual DB
   // edit could leave it empty. Treat a missing key as "not configured"
   // rather than letting decrypt() throw on null.
@@ -94,13 +67,15 @@ export async function loadAiConfig(
       // Not silent — a rotated/mismatched ENCRYPTION_KEY here means
       // semantic search quietly stops working, so leave a breadcrumb.
       console.error(
-        `[ai config] embeddings key for account ${accountId} could not be decrypted — check ENCRYPTION_KEY; semantic search is disabled until it is re-entered.`,
+        `[ai config] embeddings key for agent ${row.id} (account ${accountId}) could not be decrypted — check ENCRYPTION_KEY; semantic search is disabled until it is re-entered.`,
       )
       embeddingsApiKey = null
     }
   }
 
   return {
+    id: row.id,
+    name: row.name,
     provider: row.provider,
     model: row.model,
     apiKey: decrypt(row.api_key),
@@ -115,31 +90,143 @@ export async function loadAiConfig(
 }
 
 /**
- * Load + decrypt just the embeddings key, independent of `is_active`.
- * Used by the knowledge-base ingest routes so the KB gets embedded (and
- * semantic search works) whenever an embeddings key is present, even if
- * the assistant's master switch is currently off.
+ * Load and decrypt one specific agent by id, scoped to `accountId` (a
+ * foreign agent id, or one that belongs to a different account, comes
+ * back as `null` — same "not found" shape as a missing row, no
+ * distinct error that would leak whether the id exists elsewhere).
+ * Returns `null` when the master switch (`is_active`) is off — draft/
+ * auto-reply treat "off" and "not configured" identically. Throws only
+ * if the stored key can't be decrypted (mismatched `ENCRYPTION_KEY`),
+ * so that distinct failure surfaces rather than looking unconfigured.
  *
- * Returns `{ key, corrupt }`: `key` is null when there's no key OR it
- * can't be decrypted; `corrupt` distinguishes those cases so callers can
- * warn ("a key is set but unusable") rather than silently indexing
- * lexical-only and reporting success.
+ * Works with any client: pass the RLS-scoped SSR client from a
+ * dashboard route, or the service-role admin client from the webhook.
+ */
+export async function loadAiConfig(
+  db: SupabaseClient,
+  accountId: string,
+  configId: string,
+  opts: { requireActive?: boolean } = {},
+): Promise<AiConfig | null> {
+  const { requireActive = true } = opts
+  const { data, error } = await db
+    .from('ai_configs')
+    .select(CONFIG_COLUMNS)
+    .eq('id', configId)
+    .eq('account_id', accountId)
+    .maybeSingle()
+
+  if (error) throw error
+  if (!data) return null
+
+  const row = data as AiConfigRow
+  // The Playground passes requireActive:false so an admin can test the
+  // agent before flipping the master switch on.
+  if (requireActive && !row.is_active) return null
+
+  return rowToConfig(row, accountId)
+}
+
+/**
+ * Load and decrypt the account's *default* agent — the one auto-reply,
+ * the webhook's new-conversation routing, and the inbox draft button
+ * all use. Returns `null` when the account has no default agent set
+ * (no agents yet, or the default was deleted and none was re-picked).
+ */
+export async function loadDefaultAiConfig(
+  db: SupabaseClient,
+  accountId: string,
+  opts: { requireActive?: boolean } = {},
+): Promise<AiConfig | null> {
+  const { data: account, error } = await db
+    .from('accounts')
+    .select('default_ai_config_id')
+    .eq('id', accountId)
+    .maybeSingle()
+  if (error || !account?.default_ai_config_id) return null
+
+  return loadAiConfig(db, accountId, account.default_ai_config_id, opts)
+}
+
+/** Lightweight summary of one agent — no key material, safe to send to
+ *  the client as-is. Used by the agents list page. */
+export interface AiConfigSummary {
+  id: string
+  name: string
+  provider: 'openai' | 'anthropic'
+  model: string
+  isActive: boolean
+  autoReplyEnabled: boolean
+  isDefault: boolean
+}
+
+/** List every agent configured for the account, most-recently-created
+ *  first, flagging which one is the default. Never touches key
+ *  material — no decrypt, no throw on a corrupt key. */
+export async function listAiConfigs(
+  db: SupabaseClient,
+  accountId: string,
+): Promise<AiConfigSummary[]> {
+  const [{ data: account }, { data: rows, error }] = await Promise.all([
+    db.from('accounts').select('default_ai_config_id').eq('id', accountId).maybeSingle(),
+    db
+      .from('ai_configs')
+      .select('id, name, provider, model, is_active, auto_reply_enabled, created_at')
+      .eq('account_id', accountId)
+      .order('created_at', { ascending: false }),
+  ])
+  if (error) throw error
+
+  const defaultId = account?.default_ai_config_id ?? null
+  return (rows ?? []).map((r) => ({
+    id: r.id,
+    name: r.name,
+    provider: r.provider,
+    model: r.model,
+    isActive: r.is_active,
+    autoReplyEnabled: r.auto_reply_enabled,
+    isDefault: r.id === defaultId,
+  }))
+}
+
+/**
+ * Load + decrypt just the *default* agent's embeddings key, independent
+ * of `is_active`. Used by the knowledge-base ingest routes so the KB
+ * gets embedded (and semantic search works) whenever the default
+ * agent has an embeddings key, even if its master switch is off.
+ *
+ * Knowledge base documents are account-wide, not per-agent (migration
+ * 030 predates multi-agent) — a non-default agent's own
+ * `embeddings_api_key` is simply not used for this; the settings UI
+ * makes that explicit rather than silently ignoring it.
+ *
+ * Returns `{ key, corrupt }`: `key` is null when there's no default
+ * agent, no key, or it can't be decrypted; `corrupt` distinguishes the
+ * "set but unusable" case so callers can warn instead of silently
+ * indexing lexical-only and reporting success.
  */
 export async function loadEmbeddingsKey(
   db: SupabaseClient,
   accountId: string,
 ): Promise<{ key: string | null; corrupt: boolean }> {
+  const { data: account } = await db
+    .from('accounts')
+    .select('default_ai_config_id')
+    .eq('id', accountId)
+    .maybeSingle()
+  if (!account?.default_ai_config_id) return { key: null, corrupt: false }
+
   const { data, error } = await db
     .from('ai_configs')
     .select('embeddings_api_key')
-    .eq('account_id', accountId)
+    .eq('id', account.default_ai_config_id)
     .maybeSingle()
   if (error || !data?.embeddings_api_key) return { key: null, corrupt: false }
   try {
     return { key: decrypt(data.embeddings_api_key), corrupt: false }
   } catch {
     console.error(
-      `[ai config] embeddings key for account ${accountId} could not be decrypted — check ENCRYPTION_KEY.`,
+      `[ai config] embeddings key for account ${accountId}'s default agent could not be decrypted — check ENCRYPTION_KEY.`,
     )
     return { key: null, corrupt: true }
   }

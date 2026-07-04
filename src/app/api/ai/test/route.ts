@@ -64,6 +64,9 @@ export async function POST(request: Request) {
 
     try {
       await validateAiCredentials({
+        // Irrelevant to a connectivity check — placeholders only.
+        id: '',
+        name: '',
         provider,
         model,
         apiKey: apiKeyPlain,
@@ -72,7 +75,6 @@ export async function POST(request: Request) {
         autoReplyEnabled: false,
         autoReplyMaxPerConversation: 3,
         embeddingsApiKey: null,
-        // Irrelevant to a connectivity check — placeholder only.
         defaultNewConversationOwner: 'human',
         actions: {
           updateTags: { enabled: false, guidelines: null },

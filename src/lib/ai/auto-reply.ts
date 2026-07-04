@@ -1,5 +1,5 @@
 import { supabaseAdmin } from './admin-client'
-import { loadAiConfig, hasAnyActionEnabled } from './config'
+import { loadDefaultAiConfig, hasAnyActionEnabled } from './config'
 import { buildConversationContext } from './context'
 import { retrieveKnowledge } from './knowledge'
 import { runAgentTurn } from './agent'
@@ -47,7 +47,7 @@ export async function dispatchInboundToAiReply(
   try {
     const db = supabaseAdmin()
 
-    const config = await loadAiConfig(db, accountId)
+    const config = await loadDefaultAiConfig(db, accountId)
     if (!config || !config.autoReplyEnabled) return
 
     // Deterministic, user-configured responders win over the LLM — the

@@ -9,7 +9,7 @@ import { verifyMetaWebhookSignature } from '@/lib/whatsapp/webhook-signature'
 import { runAutomationsForTrigger } from '@/lib/automations/engine'
 import { dispatchInboundToFlows } from '@/lib/flows/engine'
 import { dispatchInboundToAiReply } from '@/lib/ai/auto-reply'
-import { loadAiConfig } from '@/lib/ai/config'
+import { loadDefaultAiConfig } from '@/lib/ai/config'
 import { dispatchWebhookEvent } from '@/lib/webhooks/deliver'
 import {
   handleTemplateWebhookChange,
@@ -960,7 +960,7 @@ async function resolveDefaultOwnerKind(
   accountId: string,
 ): Promise<'ai' | 'human'> {
   try {
-    const config = await loadAiConfig(supabaseAdmin(), accountId)
+    const config = await loadDefaultAiConfig(supabaseAdmin(), accountId)
     if (
       config &&
       config.autoReplyEnabled &&

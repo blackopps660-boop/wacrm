@@ -53,6 +53,8 @@ import { runAgentTurn } from './agent'
 
 function config(overrides: Partial<AiConfig> = {}): AiConfig {
   return {
+    id: 'agent-1',
+    name: 'Test Agent',
     provider: 'openai',
     model: 'gpt-test',
     apiKey: 'sk-test',

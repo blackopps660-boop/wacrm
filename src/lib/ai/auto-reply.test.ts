@@ -18,7 +18,7 @@ const h = vi.hoisted(() => ({
 }))
 
 vi.mock('./config', () => ({
-  loadAiConfig: h.loadAiConfig,
+  loadDefaultAiConfig: h.loadAiConfig,
   hasAnyActionEnabled: (actions: { updateTags: { enabled: boolean }; updateContactFields: { enabled: boolean }; triggerAutomations: { enabled: boolean } }) =>
     actions.updateTags.enabled || actions.updateContactFields.enabled || actions.triggerAutomations.enabled,
 }))
@@ -72,6 +72,8 @@ const ARGS = {
 
 function aiConfig(overrides: Partial<AiConfig> = {}): AiConfig {
   return {
+    id: 'agent-1',
+    name: 'Test Agent',
     provider: 'openai',
     model: 'gpt-test',
     apiKey: 'sk-test',
