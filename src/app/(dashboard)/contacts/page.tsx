@@ -3,7 +3,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { createClient } from '@/lib/supabase/client';
 import { toast } from 'sonner';
-import type { Contact, Tag, ContactTag } from '@/types';
+import type { Contact, Tag, ContactTag, LifecycleStage } from '@/types';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import {
@@ -47,6 +47,7 @@ import {
   ChevronRight,
   SlidersHorizontal,
   Filter,
+  Route,
   X,
 } from 'lucide-react';
 import { ContactForm } from '@/components/contacts/contact-form';
@@ -75,6 +76,9 @@ export default function ContactsPage() {
   const [totalCount, setTotalCount] = useState(0);
   // Tag filter — contacts shown must have ANY of these tags (OR).
   const [selectedTagIds, setSelectedTagIds] = useState<string[]>([]);
+  // Lifecycle stage filter — single-select (a contact only has one).
+  // null = no filter ("All stages").
+  const [selectedStageId, setSelectedStageId] = useState<string | null>(null);
 
   // Modals
   const [formOpen, setFormOpen] = useState(false);
@@ -94,6 +98,10 @@ export default function ContactsPage() {
 
   // All tags for display
   const [tagsMap, setTagsMap] = useState<Record<string, Tag>>({});
+  // All lifecycle stages, ordered — for the filter popover, the column
+  // badge, and the "which stages exist" lookup.
+  const [stages, setStages] = useState<LifecycleStage[]>([]);
+  const [stagesMap, setStagesMap] = useState<Record<string, LifecycleStage>>({});
 
   // Guards against out-of-order fetch responses: each fetchContacts run
   // claims a sequence number and only the latest is allowed to commit its
@@ -113,6 +121,23 @@ export default function ContactsPage() {
         const pruned = prev.filter((id) => map[id]);
         return pruned.length === prev.length ? prev : pruned;
       });
+    }
+  }, [supabase]);
+
+  const fetchStages = useCallback(async () => {
+    const { data } = await supabase
+      .from('lifecycle_stages')
+      .select('*')
+      .order('position', { ascending: true });
+    if (data) {
+      const rows = data as LifecycleStage[];
+      setStages(rows);
+      const map: Record<string, LifecycleStage> = {};
+      rows.forEach((s) => (map[s.id] = s));
+      setStagesMap(map);
+      // Same pruning as fetchTags — a stage deleted elsewhere shouldn't
+      // linger as an invisible filter.
+      setSelectedStageId((prev) => (prev && !map[prev] ? null : prev));
     }
   }, [supabase]);
 
@@ -141,6 +166,7 @@ export default function ContactsPage() {
         p_search: term || null,
         p_limit: PAGE_SIZE,
         p_offset: from,
+        p_lifecycle_stage_id: selectedStageId,
       });
       if (seq !== fetchSeq.current) return; // superseded by a newer fetch
       if (error) {
@@ -161,6 +187,9 @@ export default function ContactsPage() {
       if (term) {
         const like = `%${term}%`;
         query = query.or(`name.ilike.${like},phone.ilike.${like},email.ilike.${like}`);
+      }
+      if (selectedStageId) {
+        query = query.eq('lifecycle_stage_id', selectedStageId);
       }
 
       const { data, count: exactCount, error } = await query;
@@ -201,11 +230,14 @@ export default function ContactsPage() {
       tags: (tagsByContact[c.id] ?? [])
         .map((tid) => tagsMap[tid])
         .filter(Boolean),
+      lifecycle_stage: c.lifecycle_stage_id
+        ? (stagesMap[c.lifecycle_stage_id] ?? null)
+        : null,
     }));
 
     setContacts(enriched);
     setLoading(false);
-  }, [supabase, page, search, selectedTagIds, tagsMap]);
+  }, [supabase, page, search, selectedTagIds, selectedStageId, tagsMap, stagesMap]);
 
   // Load-once-on-mount-ish data fetches. Each setter inside runs
   // inside an async promise completion (Supabase await), not
@@ -215,6 +247,11 @@ export default function ContactsPage() {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     fetchTags();
   }, [fetchTags]);
+
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    fetchStages();
+  }, [fetchStages]);
 
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
@@ -321,7 +358,8 @@ export default function ContactsPage() {
   const allTags = Object.values(tagsMap).sort((a, b) =>
     a.name.localeCompare(b.name)
   );
-  const hasActiveFilters = search.trim().length > 0 || selectedTagIds.length > 0;
+  const hasActiveFilters =
+    search.trim().length > 0 || selectedTagIds.length > 0 || !!selectedStageId;
 
   function toggleTagFilter(tagId: string) {
     setSelectedTagIds((prev) =>
@@ -334,6 +372,21 @@ export default function ContactsPage() {
 
   function clearTagFilters() {
     setSelectedTagIds([]);
+    setPage(0);
+  }
+
+  // Lifecycle stage filter is single-select — picking the currently
+  // active stage again clears it, same as a radio group with a clear.
+  const activeStages = stages.filter((s) => !s.is_lost);
+  const lostStages = stages.filter((s) => s.is_lost);
+
+  function selectStageFilter(stageId: string) {
+    setSelectedStageId((prev) => (prev === stageId ? null : stageId));
+    setPage(0);
+  }
+
+  function clearStageFilter() {
+    setSelectedStageId(null);
     setPage(0);
   }
 
@@ -458,6 +511,66 @@ export default function ContactsPage() {
               )}
             </PopoverContent>
           </Popover>
+
+          <Popover>
+            <PopoverTrigger
+              render={
+                <Button
+                  variant="outline"
+                  className="border-border text-muted-foreground hover:bg-muted shrink-0"
+                />
+              }
+            >
+              <Route className="size-4" />
+              {selectedStageId ? stagesMap[selectedStageId]?.name : 'Lifecycle stage'}
+            </PopoverTrigger>
+            <PopoverContent align="start" className="w-64 p-0">
+              <div className="flex items-center justify-between px-3 py-2 border-b border-border">
+                <span className="text-sm font-medium text-popover-foreground">
+                  Lifecycle stage
+                </span>
+                {selectedStageId && (
+                  <button
+                    onClick={clearStageFilter}
+                    className="text-xs text-muted-foreground hover:text-foreground"
+                  >
+                    Clear
+                  </button>
+                )}
+              </div>
+              {stages.length === 0 ? (
+                <p className="px-3 py-4 text-sm text-muted-foreground text-center">
+                  No lifecycle stages yet.
+                </p>
+              ) : (
+                <div className="max-h-64 overflow-y-auto py-1">
+                  {activeStages.map((stage) => (
+                    <StageFilterRow
+                      key={stage.id}
+                      stage={stage}
+                      selected={selectedStageId === stage.id}
+                      onSelect={() => selectStageFilter(stage.id)}
+                    />
+                  ))}
+                  {lostStages.length > 0 && (
+                    <>
+                      <p className="px-3 pb-1 pt-2 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                        Lost stages
+                      </p>
+                      {lostStages.map((stage) => (
+                        <StageFilterRow
+                          key={stage.id}
+                          stage={stage}
+                          selected={selectedStageId === stage.id}
+                          onSelect={() => selectStageFilter(stage.id)}
+                        />
+                      ))}
+                    </>
+                  )}
+                </div>
+              )}
+            </PopoverContent>
+          </Popover>
         </div>
 
         {/* Active tag-filter chips */}
@@ -492,6 +605,28 @@ export default function ContactsPage() {
             >
               Clear all
             </button>
+          </div>
+        )}
+
+        {/* Active lifecycle-stage-filter chip */}
+        {selectedStageId && stagesMap[selectedStageId] && (
+          <div className="flex flex-wrap items-center gap-1.5">
+            <span
+              className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium"
+              style={{
+                backgroundColor: stagesMap[selectedStageId].color + '20',
+                color: stagesMap[selectedStageId].color,
+              }}
+            >
+              {stagesMap[selectedStageId].name}
+              <button
+                onClick={clearStageFilter}
+                aria-label={`Remove ${stagesMap[selectedStageId].name} filter`}
+                className="hover:opacity-70"
+              >
+                <X className="size-3" />
+              </button>
+            </span>
           </div>
         )}
       </div>
@@ -544,6 +679,7 @@ export default function ContactsPage() {
               <TableHead className="text-muted-foreground">Phone</TableHead>
               <TableHead className="text-muted-foreground hidden md:table-cell">Email</TableHead>
               <TableHead className="text-muted-foreground hidden lg:table-cell">Company</TableHead>
+              <TableHead className="text-muted-foreground hidden md:table-cell">Stage</TableHead>
               <TableHead className="text-muted-foreground hidden md:table-cell">Tags</TableHead>
               <TableHead className="text-muted-foreground hidden lg:table-cell">Created</TableHead>
               <TableHead className="text-muted-foreground w-12" />
@@ -552,7 +688,7 @@ export default function ContactsPage() {
           <TableBody>
             {loading ? (
               <TableRow className="border-border">
-                <TableCell colSpan={8} className="text-center py-12">
+                <TableCell colSpan={9} className="text-center py-12">
                   <div className="flex flex-col items-center gap-2">
                     <Loader2 className="size-6 animate-spin text-primary" />
                     <p className="text-sm text-muted-foreground">Loading contacts...</p>
@@ -561,7 +697,7 @@ export default function ContactsPage() {
               </TableRow>
             ) : contacts.length === 0 ? (
               <TableRow className="border-border">
-                <TableCell colSpan={8} className="text-center py-12">
+                <TableCell colSpan={9} className="text-center py-12">
                   <div className="flex flex-col items-center gap-2">
                     <Users className="size-8 text-muted-foreground" />
                     <p className="text-sm text-muted-foreground">
@@ -610,6 +746,21 @@ export default function ContactsPage() {
                   </TableCell>
                   <TableCell className="text-muted-foreground hidden lg:table-cell text-sm">
                     {contact.company || <span className="text-muted-foreground">-</span>}
+                  </TableCell>
+                  <TableCell className="hidden md:table-cell">
+                    {contact.lifecycle_stage ? (
+                      <span
+                        className="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium"
+                        style={{
+                          backgroundColor: contact.lifecycle_stage.color + '20',
+                          color: contact.lifecycle_stage.color,
+                        }}
+                      >
+                        {contact.lifecycle_stage.name}
+                      </span>
+                    ) : (
+                      <span className="text-muted-foreground text-xs">-</span>
+                    )}
                   </TableCell>
                   <TableCell className="hidden md:table-cell">
                     <div className="flex flex-wrap gap-1">
@@ -832,5 +983,30 @@ export default function ContactsPage() {
         </DialogContent>
       </Dialog>
     </div>
+  );
+}
+
+function StageFilterRow({
+  stage,
+  selected,
+  onSelect,
+}: {
+  stage: LifecycleStage;
+  selected: boolean;
+  onSelect: () => void;
+}) {
+  return (
+    <button
+      onClick={onSelect}
+      className={`flex w-full items-center gap-2.5 px-3 py-1.5 text-left hover:bg-muted/50 ${
+        selected ? 'bg-muted/50' : ''
+      }`}
+    >
+      <span
+        className="size-2.5 shrink-0 rounded-full"
+        style={{ backgroundColor: stage.color }}
+      />
+      <span className="truncate text-sm text-popover-foreground">{stage.name}</span>
+    </button>
   );
 }

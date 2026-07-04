@@ -116,6 +116,12 @@ export interface Contact {
   /** Hydrated by queries that embed `contact_tags(tags(*))` (e.g. the
    *  Inbox conversation list, for tag filtering). Absent otherwise. */
   tags?: Tag[];
+  /** One lifecycle stage at a time (migration 041) — unlike tags, a
+   *  contact is never in more than one at once. Null = unassigned. */
+  lifecycle_stage_id?: string | null;
+  /** Hydrated by queries that embed `lifecycle_stage:lifecycle_stages(*)`.
+   *  Absent otherwise. */
+  lifecycle_stage?: LifecycleStage | null;
 }
 
 export interface Tag {
@@ -130,6 +136,20 @@ export interface ContactTag {
   id: string;
   contact_id: string;
   tag_id: string;
+}
+
+/** Per-account, ordered, colour-coded contact lifecycle stage
+ *  (migration 041) — e.g. New Lead, Hot Lead, Customer. `is_lost`
+ *  groups it into the "Lost stages" bucket in the UI (e.g. Cold Lead),
+ *  purely for display/filtering — it doesn't change behavior. */
+export interface LifecycleStage {
+  id: string;
+  account_id: string;
+  name: string;
+  color: string;
+  position: number;
+  is_lost: boolean;
+  created_at: string;
 }
 
 export interface CustomField {

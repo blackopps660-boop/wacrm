@@ -4,7 +4,7 @@ import { useState, useEffect } from 'react';
 import { createClient } from '@/lib/supabase/client';
 import { useAuth } from '@/hooks/use-auth';
 import { toast } from 'sonner';
-import type { Contact, Tag, ContactTag } from '@/types';
+import type { Contact, Tag, ContactTag, LifecycleStage } from '@/types';
 import {
   findExistingContact,
   isExactMatch,
@@ -23,6 +23,13 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
 import { Loader2, AlertTriangle } from 'lucide-react';
 
 interface ContactFormProps {
@@ -67,6 +74,9 @@ export function ContactForm({
   const [selectedTagIds, setSelectedTagIds] = useState<string[]>([]);
   const [loadingTags, setLoadingTags] = useState(false);
 
+  const [stages, setStages] = useState<LifecycleStage[]>([]);
+  const [stageId, setStageId] = useState<string | null>(null);
+
   useEffect(() => {
     if (open) {
       setName(contact?.name ?? '');
@@ -74,8 +84,10 @@ export function ContactForm({
       setEmail(contact?.email ?? '');
       setCompany(contact?.company ?? '');
       setSelectedTagIds(contactTags.map((ct) => ct.tag_id));
+      setStageId(contact?.lifecycle_stage_id ?? null);
       setDupMatch(null);
       fetchTags();
+      fetchStages();
     }
   }, [open, contact]);
 
@@ -109,6 +121,14 @@ export function ContactForm({
       .order('name');
     if (data) setTags(data);
     setLoadingTags(false);
+  }
+
+  async function fetchStages() {
+    const { data } = await supabase
+      .from('lifecycle_stages')
+      .select('*')
+      .order('position', { ascending: true });
+    if (data) setStages(data);
   }
 
   function toggleTag(tagId: string) {
@@ -154,6 +174,7 @@ export function ContactForm({
             phone: phone.trim(),
             email: email.trim() || null,
             company: company.trim() || null,
+            lifecycle_stage_id: stageId,
             updated_at: new Date().toISOString(),
           })
           .eq('id', contactId);
@@ -168,6 +189,7 @@ export function ContactForm({
             phone: phone.trim(),
             email: email.trim() || null,
             company: company.trim() || null,
+            lifecycle_stage_id: stageId,
           })
           .select('id')
           .single();
@@ -322,6 +344,37 @@ export function ContactForm({
               placeholder="Acme Inc."
               className="bg-muted border-border text-foreground placeholder:text-muted-foreground"
             />
+          </div>
+
+          <div className="space-y-2">
+            <Label className="text-muted-foreground">Lifecycle stage</Label>
+            <Select
+              value={stageId ?? '__none__'}
+              onValueChange={(v) => setStageId(v === '__none__' ? null : v)}
+            >
+              <SelectTrigger className="bg-muted border-border text-foreground">
+                {/* Select.Value doesn't auto-resolve a SelectItem's
+                    children into a label — it needs an explicit
+                    (value) => label function or it just prints the
+                    raw stored value. */}
+                <SelectValue>
+                  {(v: string) => {
+                    if (v === '__none__' || !v) return 'Unassigned';
+                    const stage = stages.find((s) => s.id === v);
+                    return stage ? `${stage.name}${stage.is_lost ? ' (lost)' : ''}` : 'Unassigned';
+                  }}
+                </SelectValue>
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="__none__">Unassigned</SelectItem>
+                {stages.map((stage) => (
+                  <SelectItem key={stage.id} value={stage.id}>
+                    {stage.name}
+                    {stage.is_lost ? ' (lost)' : ''}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           </div>
 
           <div className="space-y-2">

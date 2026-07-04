@@ -5,7 +5,7 @@ import { createClient } from '@/lib/supabase/client';
 import { useAuth } from '@/hooks/use-auth';
 import { formatCurrency } from '@/lib/currency';
 import { toast } from 'sonner';
-import type { Contact, Tag, ContactTag, ContactNote, CustomField, ContactCustomValue, Deal, MessageTemplate } from '@/types';
+import type { Contact, Tag, ContactTag, ContactNote, CustomField, ContactCustomValue, Deal, MessageTemplate, LifecycleStage } from '@/types';
 import {
   TemplatePicker,
   type TemplateSendValues,
@@ -21,6 +21,13 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
 import { Textarea } from '@/components/ui/textarea';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { Badge } from '@/components/ui/badge';
@@ -71,6 +78,8 @@ export function ContactDetailView({
   const [editPhone, setEditPhone] = useState('');
   const [editEmail, setEditEmail] = useState('');
   const [editCompany, setEditCompany] = useState('');
+  const [editStageId, setEditStageId] = useState<string | null>(null);
+  const [stages, setStages] = useState<LifecycleStage[]>([]);
   const [savingDetails, setSavingDetails] = useState(false);
 
   // Tags tab
@@ -110,9 +119,18 @@ export function ContactDetailView({
       setEditPhone(data.phone);
       setEditEmail(data.email ?? '');
       setEditCompany(data.company ?? '');
+      setEditStageId(data.lifecycle_stage_id ?? null);
     }
     setLoading(false);
   }, [contactId, supabase]);
+
+  const fetchStages = useCallback(async () => {
+    const { data } = await supabase
+      .from('lifecycle_stages')
+      .select('*')
+      .order('position', { ascending: true });
+    if (data) setStages(data as LifecycleStage[]);
+  }, [supabase]);
 
   const fetchTags = useCallback(async () => {
     if (!contactId) return;
@@ -180,12 +198,22 @@ export function ContactDetailView({
   useEffect(() => {
     if (open && contactId) {
       fetchContact();
+      fetchStages();
       fetchTags();
       fetchNotes();
       fetchCustomFields();
       fetchDeals();
     }
-  }, [open, contactId, fetchContact, fetchTags, fetchNotes, fetchCustomFields, fetchDeals]);
+  }, [
+    open,
+    contactId,
+    fetchContact,
+    fetchStages,
+    fetchTags,
+    fetchNotes,
+    fetchCustomFields,
+    fetchDeals,
+  ]);
 
   async function copyPhone() {
     if (!contact) return;
@@ -208,6 +236,7 @@ export function ContactDetailView({
         phone: editPhone.trim(),
         email: editEmail.trim() || null,
         company: editCompany.trim() || null,
+        lifecycle_stage_id: editStageId,
         updated_at: new Date().toISOString(),
       })
       .eq('id', contactId);
@@ -434,6 +463,22 @@ export function ContactDetailView({
                       </span>
                     )}
                   </div>
+                  {contact.lifecycle_stage_id &&
+                    (() => {
+                      const stage = stages.find((s) => s.id === contact.lifecycle_stage_id);
+                      if (!stage) return null;
+                      return (
+                        <span
+                          className="mt-1.5 inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium"
+                          style={{
+                            backgroundColor: stage.color + '20',
+                            color: stage.color,
+                          }}
+                        >
+                          {stage.name}
+                        </span>
+                      );
+                    })()}
                 </div>
               </div>
               <div className="mt-3">
@@ -524,6 +569,34 @@ export function ContactDetailView({
                       onChange={(e) => setEditCompany(e.target.value)}
                       className="bg-muted border-border text-foreground h-8 text-sm"
                     />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label className="text-muted-foreground text-xs">Lifecycle stage</Label>
+                    <Select
+                      value={editStageId ?? '__none__'}
+                      onValueChange={(v) => setEditStageId(v === '__none__' ? null : v)}
+                    >
+                      <SelectTrigger className="bg-muted border-border text-foreground h-8 text-sm">
+                        <SelectValue>
+                          {(v: string) => {
+                            if (v === '__none__' || !v) return 'Unassigned';
+                            const stage = stages.find((s) => s.id === v);
+                            return stage
+                              ? `${stage.name}${stage.is_lost ? ' (lost)' : ''}`
+                              : 'Unassigned';
+                          }}
+                        </SelectValue>
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="__none__">Unassigned</SelectItem>
+                        {stages.map((stage) => (
+                          <SelectItem key={stage.id} value={stage.id}>
+                            {stage.name}
+                            {stage.is_lost ? ' (lost)' : ''}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
                   </div>
                   <Button
                     onClick={saveDetails}
