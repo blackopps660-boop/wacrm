@@ -8,8 +8,9 @@ import {
   normalizeConversations,
 } from "@/lib/inbox/conversations";
 import { cn } from "@/lib/utils";
+import { useAuth } from "@/hooks/use-auth";
 import type { Conversation, ConversationStatus, Tag } from "@/types";
-import { Search, ChevronDown, X, Bot } from "lucide-react";
+import { Search, ChevronDown, X, Bot, User, CircleDashed } from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
 import { Input } from "@/components/ui/input";
 import {
@@ -79,6 +80,12 @@ const FILTER_OPTIONS: { label: string; value: InboxFilter }[] = [
 
 type InboxSection = "active" | "closed";
 
+// Who owns the conversation, orthogonal to Active/Closed — "Mine" is
+// scoped to the logged-in agent's own assignments, "Unassigned" surfaces
+// what nobody (human or AI) has picked up yet. Mirrors respond.io's
+// All/Mine/Unassigned sidebar split.
+type OwnerFilter = "all" | "mine" | "unassigned";
+
 export function ConversationList({
   activeConversationId,
   onSelect,
@@ -86,9 +93,11 @@ export function ConversationList({
   onConversationsLoaded,
   resyncToken = 0,
 }: ConversationListProps) {
+  const { user } = useAuth();
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState<InboxFilter>("all");
   const [section, setSection] = useState<InboxSection>("active");
+  const [ownerFilter, setOwnerFilter] = useState<OwnerFilter>("all");
   const [loading, setLoading] = useState(true);
   // Contact-based filters (issue #272). Tags use OR logic (a conversation
   // matches if its contact carries any selected tag), consistent with
@@ -265,6 +274,18 @@ export function ConversationList({
     [conversations]
   );
 
+  // Mine/Unassigned counts are scoped to the current section (Active or
+  // Closed) so the number next to each pill matches what clicking it
+  // would actually show, not a total across both sections.
+  const mineCount = useMemo(
+    () => sectioned.filter((c) => !!user && c.assigned_agent_id === user.id).length,
+    [sectioned, user]
+  );
+  const unassignedCount = useMemo(
+    () => sectioned.filter((c) => c.owner_kind === "unassigned").length,
+    [sectioned]
+  );
+
   const filtered = useMemo(() => {
     let result = sectioned;
 
@@ -278,6 +299,12 @@ export function ConversationList({
       } else if (filter !== "all") {
         result = result.filter((c) => c.status === filter);
       }
+    }
+
+    if (ownerFilter === "mine") {
+      result = result.filter((c) => !!user && c.assigned_agent_id === user.id);
+    } else if (ownerFilter === "unassigned") {
+      result = result.filter((c) => c.owner_kind === "unassigned");
     }
 
     // Contact-based filters (tags via OR logic, exact company match).
@@ -301,7 +328,7 @@ export function ConversationList({
     }
 
     return result;
-  }, [sectioned, section, filter, search, selectedTagIds, selectedCompany]);
+  }, [sectioned, section, filter, ownerFilter, user, search, selectedTagIds, selectedCompany]);
 
   const toggleTag = useCallback((id: string) => {
     setSelectedTagIds((prev) =>
@@ -371,6 +398,54 @@ export function ConversationList({
             <span className="ml-1.5 text-xs text-muted-foreground">
               {closedCount}
             </span>
+          )}
+        </button>
+      </div>
+
+      {/* Owner quick filters — All / Mine / Unassigned, orthogonal to
+          Active/Closed above. Mirrors respond.io's sidebar split so an
+          agent can jump straight to their own queue or to what nobody
+          has picked up yet. */}
+      <div className="flex items-center gap-1 border-b border-border px-3 py-2">
+        <button
+          onClick={() => setOwnerFilter("all")}
+          className={cn(
+            "rounded-full px-2.5 py-1 text-xs font-medium transition-colors",
+            ownerFilter === "all"
+              ? "bg-primary/10 text-primary"
+              : "text-muted-foreground hover:bg-muted hover:text-foreground"
+          )}
+        >
+          All
+        </button>
+        <button
+          onClick={() => setOwnerFilter("mine")}
+          className={cn(
+            "inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-medium transition-colors",
+            ownerFilter === "mine"
+              ? "bg-primary/10 text-primary"
+              : "text-muted-foreground hover:bg-muted hover:text-foreground"
+          )}
+        >
+          <User className="size-3" />
+          Mine
+          {mineCount > 0 && (
+            <span className="text-[10px] opacity-80">{mineCount}</span>
+          )}
+        </button>
+        <button
+          onClick={() => setOwnerFilter("unassigned")}
+          className={cn(
+            "inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-medium transition-colors",
+            ownerFilter === "unassigned"
+              ? "bg-primary/10 text-primary"
+              : "text-muted-foreground hover:bg-muted hover:text-foreground"
+          )}
+        >
+          <CircleDashed className="size-3" />
+          Unassigned
+          {unassignedCount > 0 && (
+            <span className="text-[10px] opacity-80">{unassignedCount}</span>
           )}
         </button>
       </div>
@@ -560,13 +635,17 @@ export function ConversationList({
         ) : filtered.length === 0 ? (
           <div className="px-4 py-12 text-center">
             <p className="text-sm text-muted-foreground">
-              {section === "closed"
-                ? "No closed conversations"
-                : "No conversations found"}
+              {ownerFilter === "mine"
+                ? "No conversations assigned to you"
+                : ownerFilter === "unassigned"
+                  ? "Nothing unassigned right now"
+                  : section === "closed"
+                    ? "No closed conversations"
+                    : "No conversations found"}
             </p>
           </div>
         ) : (
-          <div className="flex flex-col">
+          <div className="flex flex-col divide-y divide-border/50">
             {filtered.map((conv) => (
               <ConversationItem
                 key={conv.id}
@@ -630,12 +709,15 @@ function ConversationItem({
       })
     : "";
 
+  const isUnread = conversation.unread_count > 0;
+
   return (
     <button
       onClick={handleClick}
       className={cn(
         "flex w-full items-start gap-3 px-3 py-3 text-left transition-colors hover:bg-muted/50",
-        isActive && "border-l-2 border-primary bg-muted/70"
+        isActive && "border-l-2 border-primary bg-muted/70",
+        isUnread && !isActive && "bg-muted/25"
       )}
     >
       {/* Avatar */}
@@ -655,7 +737,12 @@ function ConversationItem({
       <div className="min-w-0 flex-1">
         <div className="flex items-center justify-between gap-2">
           <span className="flex min-w-0 items-center gap-1.5">
-            <span className="truncate text-sm font-medium text-foreground">
+            <span
+              className={cn(
+                "truncate text-sm text-foreground",
+                isUnread ? "font-semibold" : "font-medium"
+              )}
+            >
               {displayName}
             </span>
             {/* AI-owned badge — the same signal the thread header's
@@ -670,14 +757,26 @@ function ConversationItem({
               </span>
             )}
           </span>
-          <span className="shrink-0 text-[10px] text-muted-foreground">{timeAgo}</span>
+          <span
+            className={cn(
+              "shrink-0 text-[10px]",
+              isUnread ? "font-medium text-primary" : "text-muted-foreground"
+            )}
+          >
+            {timeAgo}
+          </span>
         </div>
         <div className="mt-0.5 flex items-center justify-between gap-2">
-          <p className="truncate text-xs text-muted-foreground">
+          <p
+            className={cn(
+              "truncate text-xs",
+              isUnread ? "text-foreground/80" : "text-muted-foreground"
+            )}
+          >
             {conversation.last_message_text || "No messages yet"}
           </p>
           <div className="flex shrink-0 items-center gap-1.5">
-            {conversation.unread_count > 0 && (
+            {isUnread && (
               <span className="flex h-4 min-w-4 items-center justify-center rounded-full bg-primary px-1 text-[10px] font-bold text-primary-foreground">
                 {conversation.unread_count}
               </span>
