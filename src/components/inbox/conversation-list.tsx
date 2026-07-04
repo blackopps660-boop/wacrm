@@ -65,13 +65,19 @@ const STATUS_COLORS: Record<ConversationStatus, string> = {
 
 type InboxFilter = ConversationStatus | "all" | "unread";
 
+// "Closed" used to be one more option in this dropdown, mixed in with
+// open/pending conversations. Closed conversations are a different kind
+// of thing (done, archived) from open/pending (needs attention), so they
+// now get their own top-level section — this dropdown only ever narrows
+// within the active section.
 const FILTER_OPTIONS: { label: string; value: InboxFilter }[] = [
   { label: "All", value: "all" },
   { label: "Unread", value: "unread" },
   { label: "Open", value: "open" },
   { label: "Pending", value: "pending" },
-  { label: "Closed", value: "closed" },
 ];
+
+type InboxSection = "active" | "closed";
 
 export function ConversationList({
   activeConversationId,
@@ -82,6 +88,7 @@ export function ConversationList({
 }: ConversationListProps) {
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState<InboxFilter>("all");
+  const [section, setSection] = useState<InboxSection>("active");
   const [loading, setLoading] = useState(true);
   // Contact-based filters (issue #272). Tags use OR logic (a conversation
   // matches if its contact carries any selected tag), consistent with
@@ -238,13 +245,39 @@ export function ConversationList({
     return m;
   }, [tags]);
 
-  const filtered = useMemo(() => {
-    let result = conversations;
+  // Section split happens before anything else — closed conversations are
+  // archived/done, so they never show mixed in with the active section
+  // regardless of the status/unread sub-filter or search/tag filters.
+  const sectioned = useMemo(
+    () =>
+      conversations.filter((c) =>
+        section === "closed" ? c.status === "closed" : c.status !== "closed"
+      ),
+    [conversations, section]
+  );
 
-    if (filter === "unread") {
-      result = result.filter((c) => c.unread_count > 0);
-    } else if (filter !== "all") {
-      result = result.filter((c) => c.status === filter);
+  const activeCount = useMemo(
+    () => conversations.filter((c) => c.status !== "closed").length,
+    [conversations]
+  );
+  const closedCount = useMemo(
+    () => conversations.filter((c) => c.status === "closed").length,
+    [conversations]
+  );
+
+  const filtered = useMemo(() => {
+    let result = sectioned;
+
+    // The status/unread sub-filter only makes sense within the active
+    // section — every row in the closed section already has
+    // status === "closed", so applying it there would just re-filter to
+    // the same set (or, for "open"/"pending", to nothing).
+    if (section === "active") {
+      if (filter === "unread") {
+        result = result.filter((c) => c.unread_count > 0);
+      } else if (filter !== "all") {
+        result = result.filter((c) => c.status === filter);
+      }
     }
 
     // Contact-based filters (tags via OR logic, exact company match).
@@ -268,7 +301,7 @@ export function ConversationList({
     }
 
     return result;
-  }, [conversations, filter, search, selectedTagIds, selectedCompany]);
+  }, [sectioned, section, filter, search, selectedTagIds, selectedCompany]);
 
   const toggleTag = useCallback((id: string) => {
     setSelectedTagIds((prev) =>
@@ -304,6 +337,44 @@ export function ConversationList({
     // the single pane showing; fixed 320px on desktop where it shares the
     // row with the thread + contact sidebar.
     <div className="flex h-full w-full flex-col border-r border-border bg-card lg:w-80">
+      {/* Active / Closed sections. Closed conversations are done/archived,
+          so they live in their own tab rather than mixed into the same
+          list as open/pending ones. */}
+      <div className="flex border-b border-border">
+        <button
+          onClick={() => setSection("active")}
+          className={cn(
+            "flex-1 border-b-2 px-3 py-2 text-sm font-medium transition-colors",
+            section === "active"
+              ? "border-primary text-primary"
+              : "border-transparent text-muted-foreground hover:text-foreground"
+          )}
+        >
+          Active
+          {activeCount > 0 && (
+            <span className="ml-1.5 text-xs text-muted-foreground">
+              {activeCount}
+            </span>
+          )}
+        </button>
+        <button
+          onClick={() => setSection("closed")}
+          className={cn(
+            "flex-1 border-b-2 px-3 py-2 text-sm font-medium transition-colors",
+            section === "closed"
+              ? "border-primary text-primary"
+              : "border-transparent text-muted-foreground hover:text-foreground"
+          )}
+        >
+          Closed
+          {closedCount > 0 && (
+            <span className="ml-1.5 text-xs text-muted-foreground">
+              {closedCount}
+            </span>
+          )}
+        </button>
+      </div>
+
       {/* Search + Filter */}
       <div className="space-y-2 border-b border-border p-3">
         <div className="relative">
@@ -317,31 +388,36 @@ export function ConversationList({
         </div>
 
         <div className="flex flex-wrap items-center gap-1">
-          <DropdownMenu>
-            <DropdownMenuTrigger className="inline-flex items-center justify-center h-7 gap-1 px-2 text-xs text-muted-foreground hover:text-foreground rounded-md hover:bg-muted">
-                {activeFilter?.label ?? "All"}
-                <ChevronDown className="h-3 w-3" />
-            </DropdownMenuTrigger>
-            <DropdownMenuContent
-              align="start"
-              className="border-border bg-popover"
-            >
-              {FILTER_OPTIONS.map((opt) => (
-                <DropdownMenuItem
-                  key={opt.value}
-                  onClick={() => setFilter(opt.value)}
-                  className={cn(
-                    "text-sm",
-                    filter === opt.value
-                      ? "text-primary"
-                      : "text-popover-foreground"
-                  )}
-                >
-                  {opt.label}
-                </DropdownMenuItem>
-              ))}
-            </DropdownMenuContent>
-          </DropdownMenu>
+          {/* Open/Pending/Unread only make sense within the active
+              section — every closed-section row already has
+              status === "closed". */}
+          {section === "active" && (
+            <DropdownMenu>
+              <DropdownMenuTrigger className="inline-flex items-center justify-center h-7 gap-1 px-2 text-xs text-muted-foreground hover:text-foreground rounded-md hover:bg-muted">
+                  {activeFilter?.label ?? "All"}
+                  <ChevronDown className="h-3 w-3" />
+              </DropdownMenuTrigger>
+              <DropdownMenuContent
+                align="start"
+                className="border-border bg-popover"
+              >
+                {FILTER_OPTIONS.map((opt) => (
+                  <DropdownMenuItem
+                    key={opt.value}
+                    onClick={() => setFilter(opt.value)}
+                    className={cn(
+                      "text-sm",
+                      filter === opt.value
+                        ? "text-primary"
+                        : "text-popover-foreground"
+                    )}
+                  >
+                    {opt.label}
+                  </DropdownMenuItem>
+                ))}
+              </DropdownMenuContent>
+            </DropdownMenu>
+          )}
 
           {tags.length > 0 && (
             <DropdownMenu>
@@ -483,7 +559,11 @@ export function ConversationList({
           </div>
         ) : filtered.length === 0 ? (
           <div className="px-4 py-12 text-center">
-            <p className="text-sm text-muted-foreground">No conversations found</p>
+            <p className="text-sm text-muted-foreground">
+              {section === "closed"
+                ? "No closed conversations"
+                : "No conversations found"}
+            </p>
           </div>
         ) : (
           <div className="flex flex-col">
