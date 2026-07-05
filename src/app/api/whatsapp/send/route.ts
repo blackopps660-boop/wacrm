@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server'
-import { createClient } from '@/lib/supabase/server'
+import { createClient, createClientForRequest } from '@/lib/supabase/server'
 import {
   checkRateLimit,
   rateLimitResponse,
@@ -22,12 +22,12 @@ import {
 // dashboard's internal `{ error }` shape.
 export async function POST(request: Request) {
   try {
-    const supabase = await createClient()
+    const { supabase, bearerToken } = await createClientForRequest(request)
 
     const {
       data: { user },
       error: authError,
-    } = await supabase.auth.getUser()
+    } = await supabase.auth.getUser(bearerToken)
 
     if (authError || !user) {
       return NextResponse.json(

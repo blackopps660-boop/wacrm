@@ -122,6 +122,10 @@ let supabaseMock = makeSupabaseMock()
 
 vi.mock('@/lib/supabase/server', () => ({
   createClient: vi.fn(async () => supabaseMock),
+  createClientForRequest: vi.fn(async () => ({
+    supabase: supabaseMock,
+    bearerToken: undefined,
+  })),
 }))
 
 vi.mock('@/lib/flows/admin-client', () => ({

@@ -77,8 +77,17 @@ export async function middleware(request: NextRequest) {
     return withRefreshedCookies(NextResponse.redirect(url))
   }
 
-  // API routes that need auth (not webhooks)
-  if (!user && request.nextUrl.pathname.startsWith('/api/whatsapp/') &&
+  // API routes that need auth (not webhooks). This early check only
+  // sees the browser's cookie session — a mobile client with no cookie
+  // jar authenticates via an `Authorization: Bearer <token>` header
+  // instead, which this cookie-only client can't validate. Let those
+  // requests through and defer to the route handler's own
+  // createClientForRequest()+getUser(bearerToken) check, which rejects
+  // an invalid/missing bearer token itself.
+  const hasBearerAuth = /^Bearer\s+.+$/i.test(
+    request.headers.get('authorization') ?? ''
+  )
+  if (!user && !hasBearerAuth && request.nextUrl.pathname.startsWith('/api/whatsapp/') &&
       !request.nextUrl.pathname.includes('/webhook')) {
     return withRefreshedCookies(
       NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
