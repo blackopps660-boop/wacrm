@@ -383,13 +383,19 @@ async function handleStatusUpdate(status: {
   //
   // `errors[0]` is only present on `status === 'failed'` — captured so
   // failed sends are self-explanatory in the inbox instead of only
-  // showing a bare "failed" with no reason (see migration 045).
+  // showing a bare "failed" with no reason (see migration 045). Some
+  // failure modes apparently omit `errors` entirely (seen in
+  // production against a brand-new WABA) — fall back to the raw
+  // status payload rather than silently dropping the signal, so a
+  // failure is still diagnosable from the stored row alone.
   const firstError = status.errors?.[0]
   const errorMessage = firstError
     ? [firstError.title, firstError.error_data?.details ?? firstError.message]
         .filter(Boolean)
         .join(' — ')
-    : null
+    : status.status === 'failed'
+      ? `Meta sent no error detail. Raw payload: ${JSON.stringify(status)}`
+      : null
 
   const { data: updatedMessages, error: msgErr } = await supabaseAdmin()
     .from('messages')
