@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 
 // ============================================================
@@ -57,6 +57,14 @@ const META_APP_ID = process.env.NEXT_PUBLIC_META_APP_ID;
 const CONFIG_ID = process.env.NEXT_PUBLIC_META_EMBEDDED_SIGNUP_CONFIG_ID;
 
 export default function WhatsappEmbeddedSignupPage() {
+  return (
+    <Suspense fallback={null}>
+      <WhatsappEmbeddedSignupContent />
+    </Suspense>
+  );
+}
+
+function WhatsappEmbeddedSignupContent() {
   const searchParams = useSearchParams();
   const bearerToken = searchParams.get('token');
   const isMobile = searchParams.get('mobile') === '1';
