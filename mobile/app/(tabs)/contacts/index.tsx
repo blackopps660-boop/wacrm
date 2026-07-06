@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, memo } from 'react';
 import {
   View,
   Text,
@@ -10,16 +10,58 @@ import {
   RefreshControl,
 } from 'react-native';
 import { useRouter } from 'expo-router';
+import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '../../../lib/supabase';
 import { useAuth } from '../../../hooks/use-auth';
+import { Avatar } from '../../../components/Avatar';
+import { colors, radius, spacing } from '../../../lib/theme';
 import {
   loadTags,
   loadLifecycleStages,
   loadContacts,
   hydrateContactTags,
-  PAGE_SIZE,
 } from '../../../lib/contacts/queries';
 import type { Contact, Tag, LifecycleStage } from '../../../lib/types';
+
+const ROW_HEIGHT = 68;
+const SEARCH_DEBOUNCE_MS = 350;
+
+const ContactRow = memo(function ContactRow({
+  item,
+  onPress,
+}: {
+  item: Contact;
+  onPress: (id: string) => void;
+}) {
+  return (
+    <Pressable
+      style={({ pressed }) => [styles.row, pressed && styles.rowPressed]}
+      onPress={() => onPress(item.id)}
+    >
+      <Avatar label={item.name || item.phone} size={44} />
+      <View style={styles.rowContent}>
+        <Text style={styles.name} numberOfLines={1}>
+          {item.name || item.phone}
+        </Text>
+        <Text style={styles.subtext} numberOfLines={1}>
+          {item.name ? item.phone : item.email || item.company || ''}
+        </Text>
+        {item.tags && item.tags.length > 0 && (
+          <View style={styles.tagRow}>
+            {item.tags.slice(0, 3).map((t) => (
+              <View key={t.id} style={[styles.tagPill, { backgroundColor: t.color }]}>
+                <Text style={styles.tagPillText}>{t.name}</Text>
+              </View>
+            ))}
+          </View>
+        )}
+      </View>
+      {item.lifecycle_stage && (
+        <View style={[styles.stageDot, { backgroundColor: item.lifecycle_stage.color }]} />
+      )}
+    </Pressable>
+  );
+});
 
 export default function ContactsListScreen() {
   const router = useRouter();
@@ -27,6 +69,7 @@ export default function ContactsListScreen() {
   const [contacts, setContacts] = useState<Contact[]>([]);
   const [tags, setTags] = useState<Tag[]>([]);
   const [stages, setStages] = useState<LifecycleStage[]>([]);
+  const [searchInput, setSearchInput] = useState('');
   const [search, setSearch] = useState('');
   const [selectedTagIds, setSelectedTagIds] = useState<string[]>([]);
   const [selectedStageId, setSelectedStageId] = useState<string | null>(null);
@@ -36,16 +79,43 @@ export default function ContactsListScreen() {
   const [loadingMore, setLoadingMore] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Explicit "both filter lists have resolved" flag — replaces a
+  // fragile `tags.length === 0 && stages.length === 0` guess that
+  // permanently hung the contacts fetch for any account with zero
+  // tags (a real, legitimate state): tags resolving to `[]` first
+  // satisfied that guard's "still empty" half before stages had a
+  // chance to load, and the fetch-trigger effect below never listed
+  // `stages` as a dependency, so it never re-checked once stages did
+  // arrive.
+  const [filtersLoaded, setFiltersLoaded] = useState(false);
 
   // Drops stale responses when filters change rapidly — same
   // protection the web page uses.
   const fetchSeq = useRef(0);
 
+  // Debounce the search box — without this every keystroke fired a
+  // full network round-trip (visible lag while typing on real devices).
+  useEffect(() => {
+    const timer = setTimeout(() => setSearch(searchInput.trim()), SEARCH_DEBOUNCE_MS);
+    return () => clearTimeout(timer);
+  }, [searchInput]);
+
   // Re-fetch on accountId change too (Phase 4 workspace switch) — tags
   // and lifecycle stages are account-scoped, same as contacts below.
   useEffect(() => {
-    loadTags(supabase).then(setTags).catch(console.error);
-    loadLifecycleStages(supabase).then(setStages).catch(console.error);
+    setFiltersLoaded(false);
+    Promise.all([loadTags(supabase), loadLifecycleStages(supabase)])
+      .then(([t, s]) => {
+        setTags(t);
+        setStages(s);
+        setFiltersLoaded(true);
+      })
+      .catch((err) => {
+        console.error(err);
+        // Don't leave the contacts list hung if tags/stages fail —
+        // still let the (unfiltered) fetch below proceed.
+        setFiltersLoaded(true);
+      });
   }, [accountId]);
 
   const fetchPage = useCallback(
@@ -75,13 +145,15 @@ export default function ContactsListScreen() {
   );
 
   // Re-fetch page 0 whenever filters (or the active workspace) change —
-  // tags must be loaded first so hydration has a map to work with.
+  // gated on `filtersLoaded` rather than tags/stages content so it
+  // reliably fires exactly once both have resolved, regardless of
+  // whether either list happens to be empty.
   useEffect(() => {
-    if (tags.length === 0 && stages.length === 0) return;
+    if (!filtersLoaded) return;
     setLoading(true);
     fetchPage(0, false).finally(() => setLoading(false));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [search, selectedTagIds, selectedStageId, tags, accountId]);
+  }, [search, selectedTagIds, selectedStageId, filtersLoaded, accountId]);
 
   async function onRefresh() {
     setRefreshing(true);
@@ -106,15 +178,18 @@ export default function ContactsListScreen() {
     setSelectedStageId((prev) => (prev === stageId ? null : stageId));
   }
 
+  const handlePress = useCallback((id: string) => router.push(`/contacts/${id}`), [router]);
+
   return (
     <View style={styles.container}>
       <View style={styles.searchRow}>
+        <Ionicons name="search" size={17} color={colors.textFaint} style={styles.searchIcon} />
         <TextInput
           style={styles.searchInput}
           placeholder="Search name, phone, email…"
-          placeholderTextColor="#64748b"
-          value={search}
-          onChangeText={setSearch}
+          placeholderTextColor={colors.textFaint}
+          value={searchInput}
+          onChangeText={setSearchInput}
         />
       </View>
 
@@ -128,7 +203,7 @@ export default function ContactsListScreen() {
               ...tags.map((t) => ({ kind: 'tag' as const, id: t.id, label: t.name, color: t.color })),
             ]}
             keyExtractor={(item) => `${item.kind}-${item.id}`}
-            contentContainerStyle={{ gap: 8, paddingHorizontal: 16 }}
+            contentContainerStyle={{ gap: spacing.sm, paddingHorizontal: spacing.lg }}
             renderItem={({ item }) => {
               const active =
                 item.kind === 'stage' ? selectedStageId === item.id : selectedTagIds.includes(item.id);
@@ -158,130 +233,111 @@ export default function ContactsListScreen() {
 
       {loading ? (
         <View style={styles.center}>
-          <ActivityIndicator color="#a78bfa" />
+          <ActivityIndicator color={colors.accent} />
         </View>
       ) : (
         <FlatList
           data={contacts}
           keyExtractor={(item) => item.id}
           refreshControl={
-            <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#a78bfa" />
+            <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.accent} />
           }
           onEndReached={onEndReached}
           onEndReachedThreshold={0.4}
+          getItemLayout={(_, index) => ({ length: ROW_HEIGHT, offset: ROW_HEIGHT * index, index })}
+          initialNumToRender={14}
+          maxToRenderPerBatch={14}
+          windowSize={7}
+          removeClippedSubviews
           ListEmptyComponent={
             <View style={styles.center}>
               <Text style={styles.emptyText}>No contacts found</Text>
             </View>
           }
           ListFooterComponent={
-            loadingMore ? (
-              <ActivityIndicator color="#a78bfa" style={{ marginVertical: 16 }} />
-            ) : null
+            loadingMore ? <ActivityIndicator color={colors.accent} style={{ marginVertical: 16 }} /> : null
           }
-          renderItem={({ item }) => (
-            <Pressable style={styles.row} onPress={() => router.push(`/contacts/${item.id}`)}>
-              <View style={styles.avatar}>
-                <Text style={styles.avatarText}>
-                  {(item.name || item.phone).charAt(0).toUpperCase()}
-                </Text>
-              </View>
-              <View style={styles.rowContent}>
-                <Text style={styles.name} numberOfLines={1}>
-                  {item.name || item.phone}
-                </Text>
-                <Text style={styles.subtext} numberOfLines={1}>
-                  {item.name ? item.phone : item.email || item.company || ''}
-                </Text>
-                {item.tags && item.tags.length > 0 && (
-                  <View style={styles.tagRow}>
-                    {item.tags.slice(0, 3).map((t) => (
-                      <View key={t.id} style={[styles.tagPill, { backgroundColor: t.color }]}>
-                        <Text style={styles.tagPillText}>{t.name}</Text>
-                      </View>
-                    ))}
-                  </View>
-                )}
-              </View>
-              {item.lifecycle_stage && (
-                <View style={[styles.stageDot, { backgroundColor: item.lifecycle_stage.color }]} />
-              )}
-            </Pressable>
-          )}
+          renderItem={({ item }) => <ContactRow item={item} onPress={handlePress} />}
         />
       )}
 
-      <Pressable style={styles.fab} onPress={() => router.push('/contacts/new')}>
-        <Text style={styles.fabText}>+</Text>
+      <Pressable
+        style={({ pressed }) => [styles.fab, pressed && styles.fabPressed]}
+        onPress={() => router.push('/contacts/new')}
+      >
+        <Ionicons name="add" size={28} color={colors.white} />
       </Pressable>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#020617' },
-  searchRow: { padding: 16, paddingBottom: 8 },
-  searchInput: {
-    backgroundColor: '#1e293b',
-    borderRadius: 10,
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-    color: '#f8fafc',
-  },
-  filterRow: { paddingBottom: 8 },
-  filterChip: {
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 14,
-    backgroundColor: '#1e293b',
+  container: { flex: 1, backgroundColor: colors.bg },
+  searchRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    margin: spacing.lg,
+    marginBottom: spacing.sm,
+    backgroundColor: colors.surface,
+    borderRadius: radius.sm,
     borderWidth: 1,
-    borderColor: '#334155',
+    borderColor: colors.border,
+    paddingHorizontal: spacing.md,
   },
-  filterChipText: { color: '#94a3b8', fontSize: 12 },
-  filterChipTextActive: { color: '#fff', fontWeight: '600' },
-  center: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 24 },
-  emptyText: { color: '#64748b' },
-  errorBox: { backgroundColor: 'rgba(239,68,68,0.1)', margin: 16, borderRadius: 8, padding: 10 },
-  errorText: { color: '#fca5a5', fontSize: 12 },
+  searchIcon: { marginRight: spacing.sm },
+  searchInput: {
+    flex: 1,
+    paddingVertical: spacing.sm + 2,
+    color: colors.text,
+    fontSize: 15,
+  },
+  filterRow: { paddingBottom: spacing.sm },
+  filterChip: {
+    paddingHorizontal: spacing.md,
+    paddingVertical: 6,
+    borderRadius: radius.pill,
+    backgroundColor: colors.surface,
+    borderWidth: 1,
+    borderColor: colors.borderStrong,
+  },
+  filterChipText: { color: colors.textMuted, fontSize: 12 },
+  filterChipTextActive: { color: colors.white, fontWeight: '600' },
+  center: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: spacing.xl },
+  emptyText: { color: colors.textFaint },
+  errorBox: { backgroundColor: colors.dangerBg, marginHorizontal: spacing.lg, borderRadius: radius.sm, padding: spacing.sm + 2 },
+  errorText: { color: colors.dangerMuted, fontSize: 12 },
   row: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingHorizontal: 16,
-    paddingVertical: 12,
+    paddingHorizontal: spacing.lg,
+    height: ROW_HEIGHT,
     borderBottomWidth: 1,
-    borderBottomColor: '#1e293b',
-    gap: 12,
+    borderBottomColor: colors.border,
+    gap: spacing.md,
   },
-  avatar: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: 'rgba(124,58,237,0.15)',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  avatarText: { color: '#a78bfa', fontWeight: '700' },
+  rowPressed: { backgroundColor: colors.surface },
   rowContent: { flex: 1, gap: 2 },
-  name: { color: '#e2e8f0', fontSize: 15, fontWeight: '500' },
-  subtext: { color: '#64748b', fontSize: 12 },
-  tagRow: { flexDirection: 'row', gap: 4, marginTop: 4, flexWrap: 'wrap' },
+  name: { color: colors.textSecondary, fontSize: 15, fontWeight: '500' },
+  subtext: { color: colors.textFaint, fontSize: 12 },
+  tagRow: { flexDirection: 'row', gap: 4, marginTop: 3, flexWrap: 'wrap' },
   tagPill: { paddingHorizontal: 6, paddingVertical: 1, borderRadius: 8 },
-  tagPillText: { color: '#fff', fontSize: 9, fontWeight: '600' },
+  tagPillText: { color: colors.white, fontSize: 9, fontWeight: '600' },
   stageDot: { width: 10, height: 10, borderRadius: 5 },
   fab: {
     position: 'absolute',
-    right: 20,
-    bottom: 24,
-    width: 52,
-    height: 52,
-    borderRadius: 26,
-    backgroundColor: '#7c3aed',
+    right: spacing.lg + 4,
+    bottom: spacing.xl,
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    backgroundColor: colors.primary,
     alignItems: 'center',
     justifyContent: 'center',
     shadowColor: '#000',
     shadowOpacity: 0.3,
     shadowRadius: 8,
+    shadowOffset: { width: 0, height: 4 },
     elevation: 4,
   },
-  fabText: { color: '#fff', fontSize: 26, fontWeight: '400', marginTop: -2 },
+  fabPressed: { opacity: 0.9 },
 });

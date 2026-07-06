@@ -1,49 +1,68 @@
 import { Tabs } from 'expo-router';
-import { Text } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
+import { colors } from '../../lib/theme';
 
-// Icons kept as plain emoji for now rather than pulling in an icon
-// library — swap for @expo/vector-icons once the visual pass happens.
-function TabIcon({ symbol }: { symbol: string }) {
-  return <Text style={{ fontSize: 20 }}>{symbol}</Text>;
+type IoniconName = keyof typeof Ionicons.glyphMap;
+
+function TabIcon({ name, focused }: { name: IoniconName; focused: boolean }) {
+  return (
+    <Ionicons
+      name={focused ? name : (`${name}-outline` as IoniconName)}
+      size={22}
+      color={focused ? colors.accent : colors.textFaint}
+    />
+  );
 }
 
 export default function TabsLayout() {
   return (
     <Tabs
       screenOptions={{
-        headerStyle: { backgroundColor: '#0f172a' },
-        headerTintColor: '#f8fafc',
-        tabBarStyle: { backgroundColor: '#0f172a', borderTopColor: '#1e293b' },
-        tabBarActiveTintColor: '#a78bfa',
-        tabBarInactiveTintColor: '#64748b',
+        headerStyle: { backgroundColor: colors.surface },
+        headerTintColor: colors.text,
+        headerTitleStyle: { fontWeight: '700' },
+        headerShadowVisible: false,
+        tabBarStyle: {
+          backgroundColor: colors.surface,
+          borderTopColor: colors.border,
+          height: 58,
+          paddingBottom: 6,
+          paddingTop: 6,
+        },
+        tabBarActiveTintColor: colors.accent,
+        tabBarInactiveTintColor: colors.textFaint,
+        tabBarLabelStyle: { fontSize: 11, fontWeight: '600' },
       }}
     >
       <Tabs.Screen
         name="index"
         options={{
           title: 'Dashboard',
-          tabBarIcon: () => <TabIcon symbol="📊" />,
+          tabBarIcon: ({ focused }) => <TabIcon name="grid" focused={focused} />,
         }}
       />
       <Tabs.Screen
         name="inbox"
         options={{
           title: 'Inbox',
-          tabBarIcon: () => <TabIcon symbol="💬" />,
+          headerShown: false,
+          tabBarIcon: ({ focused }) => <TabIcon name="chatbubble-ellipses" focused={focused} />,
         }}
       />
       <Tabs.Screen
         name="contacts"
         options={{
           title: 'Contacts',
-          tabBarIcon: () => <TabIcon symbol="👥" />,
+          headerShown: false,
+          tabBarIcon: ({ focused }) => <TabIcon name="people" focused={focused} />,
         }}
       />
       <Tabs.Screen
         name="settings"
         options={{
           title: 'Settings',
-          tabBarIcon: () => <TabIcon symbol="⚙️" />,
+          headerShown: false,
+          tabBarIcon: ({ focused }) => <TabIcon name="settings" focused={focused} />,
         }}
       />
     </Tabs>

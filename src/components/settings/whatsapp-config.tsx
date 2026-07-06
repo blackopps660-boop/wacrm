@@ -181,6 +181,34 @@ export function WhatsAppConfig() {
     fetchConfig(accountId);
   }, [authLoading, profileLoading, user?.id, accountId, fetchConfig]);
 
+  // Listens for the success signal posted by the embedded signup
+  // popup (src/app/whatsapp-embedded-signup/page.tsx) once Meta hands
+  // back a working WABA/phone number, and refreshes this page's status
+  // instead of requiring a manual reload.
+  useEffect(() => {
+    function onMessage(event: MessageEvent) {
+      if (event.origin !== window.location.origin) return;
+      if (event.data?.type === 'whatsapp-embedded-signup-success' && accountId) {
+        toast.success('WhatsApp connected via Meta');
+        fetchConfig(accountId);
+      }
+    }
+    window.addEventListener('message', onMessage);
+    return () => window.removeEventListener('message', onMessage);
+  }, [accountId, fetchConfig]);
+
+  function handleEmbeddedSignup() {
+    const width = 500;
+    const height = 720;
+    const left = window.screenX + (window.outerWidth - width) / 2;
+    const top = window.screenY + (window.outerHeight - height) / 2;
+    window.open(
+      '/whatsapp-embedded-signup',
+      'whatsapp-embedded-signup',
+      `width=${width},height=${height},left=${left},top=${top}`,
+    );
+  }
+
   async function handleSave() {
     if (!phoneNumberId.trim()) {
       toast.error('Phone Number ID is required');
@@ -395,6 +423,33 @@ export function WhatsAppConfig() {
       <div className="grid gap-6 lg:grid-cols-[1fr_380px]">
       {/* Main config form */}
       <div className="space-y-6">
+        {/* Embedded Signup — the "Login with Meta" path, replacing manual
+            token/phone-ID entry for anyone who doesn't need the advanced
+            fields below. */}
+        {connectionStatus !== 'connected' && (
+          <Card className="border-primary/30 bg-primary/5">
+            <CardHeader>
+              <CardTitle className="text-foreground flex items-center gap-2">
+                <Zap className="size-4 text-primary" />
+                Connect with Meta
+              </CardTitle>
+              <CardDescription className="text-muted-foreground">
+                Register your WhatsApp number directly through Meta — no need to copy a token,
+                phone ID, or WABA ID by hand.
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <Button onClick={handleEmbeddedSignup} className="bg-primary hover:bg-primary/90">
+                Continue with Meta
+              </Button>
+              <p className="text-xs text-muted-foreground mt-2">
+                Prefer the manual method? Enter your credentials in the &quot;API Credentials&quot;
+                section below instead.
+              </p>
+            </CardContent>
+          </Card>
+        )}
+
         {/* Corrupted-token reset banner */}
         {showResetBanner && (
           <Alert className="bg-amber-950/40 border-amber-600/40">

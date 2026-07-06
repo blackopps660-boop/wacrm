@@ -1,12 +1,17 @@
 import { useCallback, useEffect, useState } from 'react';
 import { View, Text, Pressable, StyleSheet, ActivityIndicator } from 'react-native';
-import { apiFetch } from '../../../lib/supabase';
+import * as WebBrowser from 'expo-web-browser';
+import { Ionicons } from '@expo/vector-icons';
+import { supabase, apiFetch, API_BASE_URL } from '../../../lib/supabase';
+import { colors, radius, spacing } from '../../../lib/theme';
 
-// Read-only status view — same GET /api/whatsapp/config the web
-// Settings page uses (now Bearer-auth capable), showing whichever of
-// its response shapes it returns. Full credential entry/editing stays
-// web-only (typing a Meta access token on a phone is painful and
-// rare) — this screen is diagnostic, matching the plan's Phase 5 scope.
+// Status view + "Connect with Meta" launcher — the manual credential
+// form stays web-only (typing a Meta access token on a phone is
+// painful and rare), but Embedded Signup is just as good from a
+// device since it's a Meta-hosted flow: this opens the same page
+// src/app/whatsapp-embedded-signup/page.tsx renders for web, inside
+// an in-app browser tab, carrying this device's session token since
+// there's no shared cookie jar with a mobile WebBrowser session.
 
 interface ConfigResponse {
   connected: boolean;
@@ -23,6 +28,7 @@ interface ConfigResponse {
 export default function WhatsAppStatusScreen() {
   const [data, setData] = useState<ConfigResponse | null>(null);
   const [loading, setLoading] = useState(true);
+  const [connecting, setConnecting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
@@ -42,10 +48,30 @@ export default function WhatsAppStatusScreen() {
     load().finally(() => setLoading(false));
   }, [load]);
 
+  async function handleConnectWithMeta() {
+    setConnecting(true);
+    try {
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
+      if (!session?.access_token) return;
+
+      const url = `${API_BASE_URL}/whatsapp-embedded-signup?mobile=1&token=${encodeURIComponent(session.access_token)}`;
+      const result = await WebBrowser.openAuthSessionAsync(url, 'blinkmoon://whatsapp-connected');
+      if (result.type === 'success') {
+        setLoading(true);
+        await load();
+        setLoading(false);
+      }
+    } finally {
+      setConnecting(false);
+    }
+  }
+
   if (loading) {
     return (
       <View style={styles.center}>
-        <ActivityIndicator color="#a78bfa" />
+        <ActivityIndicator color={colors.accent} />
       </View>
     );
   }
@@ -64,34 +90,55 @@ export default function WhatsAppStatusScreen() {
           data?.connected ? styles.statusCardConnected : styles.statusCardDisconnected,
         ]}
       >
-        <Text style={styles.statusTitle}>
-          {data?.connected ? '✓ Connected' : '✕ Not Connected'}
-        </Text>
+        <View style={styles.statusHeader}>
+          <Ionicons
+            name={data?.connected ? 'checkmark-circle' : 'close-circle'}
+            size={20}
+            color={data?.connected ? colors.success : colors.danger}
+          />
+          <Text style={styles.statusTitle}>{data?.connected ? 'Connected' : 'Not Connected'}</Text>
+        </View>
         {data?.connected && data.phone_info && (
           <>
-            <Text style={styles.statusDetail}>
-              {data.phone_info.verified_name ?? 'Verified number'}
-            </Text>
-            <Text style={styles.statusDetailMuted}>
-              {data.phone_info.display_phone_number}
-            </Text>
+            <Text style={styles.statusDetail}>{data.phone_info.verified_name ?? 'Verified number'}</Text>
+            <Text style={styles.statusDetailMuted}>{data.phone_info.display_phone_number}</Text>
             {data.phone_info.quality_rating && (
-              <Text style={styles.statusDetailMuted}>
-                Quality: {data.phone_info.quality_rating}
-              </Text>
+              <Text style={styles.statusDetailMuted}>Quality: {data.phone_info.quality_rating}</Text>
             )}
           </>
         )}
-        {!data?.connected && data?.message && (
-          <Text style={styles.statusDetailMuted}>{data.message}</Text>
-        )}
+        {!data?.connected && data?.message && <Text style={styles.statusDetailMuted}>{data.message}</Text>}
       </View>
 
+      {!data?.connected && (
+        <Pressable
+          style={({ pressed }) => [styles.connectButton, pressed && { opacity: 0.85 }]}
+          onPress={handleConnectWithMeta}
+          disabled={connecting}
+        >
+          {connecting ? (
+            <ActivityIndicator color={colors.white} size="small" />
+          ) : (
+            <>
+              <Ionicons name="logo-facebook" size={18} color={colors.white} />
+              <Text style={styles.connectButtonText}>Connect with Meta</Text>
+            </>
+          )}
+        </Pressable>
+      )}
+
       <Text style={styles.note}>
-        To connect or update WhatsApp credentials, use Settings → WhatsApp on the web app.
+        For advanced options (manual token entry, webhook config), use Settings → WhatsApp on the
+        web app.
       </Text>
 
-      <Pressable style={styles.refreshButton} onPress={() => { setLoading(true); load().finally(() => setLoading(false)); }}>
+      <Pressable
+        style={styles.refreshButton}
+        onPress={() => {
+          setLoading(true);
+          load().finally(() => setLoading(false));
+        }}
+      >
         <Text style={styles.refreshButtonText}>Refresh</Text>
       </Pressable>
     </View>
@@ -99,28 +146,40 @@ export default function WhatsAppStatusScreen() {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#020617', padding: 16 },
-  center: { flex: 1, backgroundColor: '#020617', alignItems: 'center', justifyContent: 'center' },
-  errorBox: { backgroundColor: 'rgba(239,68,68,0.1)', borderRadius: 8, padding: 10, marginBottom: 12 },
-  errorText: { color: '#fca5a5', fontSize: 12 },
+  container: { flex: 1, backgroundColor: colors.bg, padding: spacing.lg },
+  center: { flex: 1, backgroundColor: colors.bg, alignItems: 'center', justifyContent: 'center' },
+  errorBox: { backgroundColor: colors.dangerBg, borderRadius: radius.sm, padding: spacing.sm + 2, marginBottom: spacing.md },
+  errorText: { color: colors.dangerMuted, fontSize: 12 },
   statusCard: {
-    borderRadius: 12,
-    padding: 16,
+    borderRadius: radius.lg,
+    padding: spacing.lg,
     borderWidth: 1,
   },
+  statusHeader: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
   statusCardConnected: { backgroundColor: 'rgba(74,222,128,0.08)', borderColor: 'rgba(74,222,128,0.3)' },
-  statusCardDisconnected: { backgroundColor: 'rgba(239,68,68,0.08)', borderColor: 'rgba(239,68,68,0.3)' },
-  statusTitle: { color: '#f8fafc', fontSize: 16, fontWeight: '700' },
-  statusDetail: { color: '#e2e8f0', fontSize: 14, marginTop: 8 },
-  statusDetailMuted: { color: '#94a3b8', fontSize: 12, marginTop: 4 },
-  note: { color: '#64748b', fontSize: 12, marginTop: 16, lineHeight: 18 },
+  statusCardDisconnected: { backgroundColor: colors.dangerBg, borderColor: colors.dangerBorder },
+  statusTitle: { color: colors.text, fontSize: 16, fontWeight: '700' },
+  statusDetail: { color: colors.textSecondary, fontSize: 14, marginTop: spacing.sm },
+  statusDetailMuted: { color: colors.textMuted, fontSize: 12, marginTop: 4 },
+  connectButton: {
+    marginTop: spacing.lg,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: spacing.sm,
+    backgroundColor: colors.primary,
+    borderRadius: radius.sm,
+    paddingVertical: spacing.md + 2,
+  },
+  connectButtonText: { color: colors.white, fontWeight: '700', fontSize: 15 },
+  note: { color: colors.textFaint, fontSize: 12, marginTop: spacing.lg, lineHeight: 18 },
   refreshButton: {
-    marginTop: 20,
+    marginTop: spacing.lg,
     borderWidth: 1,
-    borderColor: '#334155',
-    borderRadius: 10,
-    paddingVertical: 12,
+    borderColor: colors.borderStrong,
+    borderRadius: radius.sm,
+    paddingVertical: spacing.md,
     alignItems: 'center',
   },
-  refreshButtonText: { color: '#e2e8f0', fontWeight: '600' },
+  refreshButtonText: { color: colors.textSecondary, fontWeight: '600' },
 });

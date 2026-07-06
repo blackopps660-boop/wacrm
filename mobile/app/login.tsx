@@ -9,11 +9,14 @@ import {
   Platform,
   ActivityIndicator,
 } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '../lib/supabase';
+import { colors, radius, spacing, typography } from '../lib/theme';
 
 export default function LoginScreen() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -38,46 +41,65 @@ export default function LoginScreen() {
     >
       <View style={styles.card}>
         <View style={styles.logo}>
-          <Text style={styles.logoText}>🌙</Text>
+          <Ionicons name="moon" size={26} color={colors.white} />
         </View>
+        <Text style={styles.brand}>BlinkMoon</Text>
         <Text style={styles.title}>Welcome back</Text>
         <Text style={styles.subtitle}>Sign in to your account</Text>
 
         {error && (
           <View style={styles.errorBox}>
+            <Ionicons name="alert-circle" size={16} color={colors.dangerMuted} />
             <Text style={styles.errorText}>{error}</Text>
           </View>
         )}
 
         <Text style={styles.label}>Email</Text>
-        <TextInput
-          style={styles.input}
-          placeholder="you@example.com"
-          placeholderTextColor="#6b7280"
-          autoCapitalize="none"
-          autoCorrect={false}
-          keyboardType="email-address"
-          value={email}
-          onChangeText={setEmail}
-        />
+        <View style={styles.inputWrap}>
+          <Ionicons name="mail-outline" size={18} color={colors.textFaint} />
+          <TextInput
+            style={styles.input}
+            placeholder="you@example.com"
+            placeholderTextColor={colors.textFaint}
+            autoCapitalize="none"
+            autoCorrect={false}
+            keyboardType="email-address"
+            value={email}
+            onChangeText={setEmail}
+          />
+        </View>
 
         <Text style={styles.label}>Password</Text>
-        <TextInput
-          style={styles.input}
-          placeholder="Enter your password"
-          placeholderTextColor="#6b7280"
-          secureTextEntry
-          value={password}
-          onChangeText={setPassword}
-        />
+        <View style={styles.inputWrap}>
+          <Ionicons name="lock-closed-outline" size={18} color={colors.textFaint} />
+          <TextInput
+            style={styles.input}
+            placeholder="Enter your password"
+            placeholderTextColor={colors.textFaint}
+            secureTextEntry={!showPassword}
+            value={password}
+            onChangeText={setPassword}
+          />
+          <Pressable onPress={() => setShowPassword((v) => !v)} hitSlop={8}>
+            <Ionicons
+              name={showPassword ? 'eye-off-outline' : 'eye-outline'}
+              size={18}
+              color={colors.textFaint}
+            />
+          </Pressable>
+        </View>
 
         <Pressable
-          style={[styles.button, loading && styles.buttonDisabled]}
+          style={({ pressed }) => [
+            styles.button,
+            (loading || !email || !password) && styles.buttonDisabled,
+            pressed && styles.buttonPressed,
+          ]}
           onPress={handleLogin}
           disabled={loading || !email || !password}
         >
           {loading ? (
-            <ActivityIndicator color="#fff" />
+            <ActivityIndicator color={colors.white} />
           ) : (
             <Text style={styles.buttonText}>Sign in</Text>
           )}
@@ -90,68 +112,80 @@ export default function LoginScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#020617',
+    backgroundColor: colors.bg,
     justifyContent: 'center',
-    padding: 24,
+    padding: spacing.xl,
   },
   card: {
-    backgroundColor: '#0f172a',
-    borderRadius: 16,
-    padding: 24,
+    backgroundColor: colors.surface,
+    borderRadius: radius.lg,
+    padding: spacing.xl,
     borderWidth: 1,
-    borderColor: '#1e293b',
+    borderColor: colors.border,
   },
   logo: {
     alignSelf: 'center',
-    width: 48,
-    height: 48,
-    borderRadius: 12,
-    backgroundColor: 'rgba(124,58,237,0.15)',
+    width: 56,
+    height: 56,
+    borderRadius: radius.md,
+    backgroundColor: colors.primary,
     alignItems: 'center',
     justifyContent: 'center',
-    marginBottom: 16,
+    marginBottom: spacing.md,
   },
-  logoText: { fontSize: 22 },
-  title: {
-    color: '#f8fafc',
-    fontSize: 22,
+  brand: {
+    color: colors.text,
+    fontSize: 15,
     fontWeight: '700',
     textAlign: 'center',
+    letterSpacing: 0.3,
+    marginBottom: spacing.lg,
   },
+  title: { ...typography.title, color: colors.text, textAlign: 'center' },
   subtitle: {
-    color: '#94a3b8',
+    color: colors.textMuted,
     fontSize: 14,
     textAlign: 'center',
-    marginTop: 4,
-    marginBottom: 20,
+    marginTop: spacing.xs,
+    marginBottom: spacing.lg + spacing.xs,
   },
-  label: { color: '#94a3b8', fontSize: 13, marginBottom: 6, marginTop: 12 },
-  input: {
-    backgroundColor: '#1e293b',
-    borderRadius: 10,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    color: '#f8fafc',
-    fontSize: 15,
+  label: { color: colors.textMuted, fontSize: 13, marginBottom: spacing.xs, marginTop: spacing.md },
+  inputWrap: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    backgroundColor: colors.bg,
+    borderRadius: radius.sm,
+    paddingHorizontal: spacing.md,
     borderWidth: 1,
-    borderColor: '#334155',
+    borderColor: colors.borderStrong,
+  },
+  input: {
+    flex: 1,
+    paddingVertical: spacing.md,
+    color: colors.text,
+    fontSize: 15,
   },
   button: {
-    marginTop: 24,
-    backgroundColor: '#7c3aed',
-    borderRadius: 10,
-    paddingVertical: 14,
+    marginTop: spacing.xl,
+    backgroundColor: colors.primary,
+    borderRadius: radius.sm,
+    paddingVertical: spacing.md + 2,
     alignItems: 'center',
   },
-  buttonDisabled: { opacity: 0.6 },
-  buttonText: { color: '#fff', fontWeight: '600', fontSize: 15 },
+  buttonPressed: { opacity: 0.85 },
+  buttonDisabled: { opacity: 0.5 },
+  buttonText: { color: colors.white, fontWeight: '700', fontSize: 15 },
   errorBox: {
-    backgroundColor: 'rgba(239,68,68,0.1)',
-    borderColor: 'rgba(239,68,68,0.3)',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.xs,
+    backgroundColor: colors.dangerBg,
+    borderColor: colors.dangerBorder,
     borderWidth: 1,
-    borderRadius: 8,
-    padding: 10,
-    marginBottom: 8,
+    borderRadius: radius.sm,
+    padding: spacing.sm + 2,
+    marginBottom: spacing.xs,
   },
-  errorText: { color: '#fca5a5', fontSize: 13 },
+  errorText: { color: colors.dangerMuted, fontSize: 13, flex: 1 },
 });

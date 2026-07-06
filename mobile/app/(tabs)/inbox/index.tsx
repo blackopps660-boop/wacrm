@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, memo } from 'react';
 import {
   View,
   Text,
@@ -12,13 +12,60 @@ import { useRouter } from 'expo-router';
 import { supabase } from '../../../lib/supabase';
 import { useAuth } from '../../../hooks/use-auth';
 import { useRealtime } from '../../../hooks/use-realtime';
+import { Avatar } from '../../../components/Avatar';
+import { colors, spacing } from '../../../lib/theme';
 import type { Conversation } from '../../../lib/types';
 
 const PAGE_SIZE = 30;
+const ROW_HEIGHT = 74;
 // Same embed shape as the web app's CONVERSATION_SELECT
 // (src/lib/inbox/conversations.ts), minus the tags join Phase 1
 // doesn't need yet.
 const CONVERSATION_SELECT = '*, contact:contacts(*)';
+
+const ConversationRow = memo(function ConversationRow({
+  item,
+  onPress,
+}: {
+  item: Conversation;
+  onPress: (id: string) => void;
+}) {
+  const isUnread = item.unread_count > 0;
+  const label = item.contact?.name || item.contact?.phone || 'Unknown';
+  return (
+    <Pressable
+      style={({ pressed }) => [styles.row, pressed && styles.rowPressed]}
+      onPress={() => onPress(item.id)}
+    >
+      <Avatar label={label} seed={item.contact?.id} size={48} />
+      <View style={styles.rowContent}>
+        <View style={styles.rowTop}>
+          <Text style={[styles.name, isUnread && styles.unreadText]} numberOfLines={1}>
+            {label}
+          </Text>
+          {item.last_message_at && (
+            <Text style={styles.time}>
+              {new Date(item.last_message_at).toLocaleDateString(undefined, {
+                month: 'short',
+                day: 'numeric',
+              })}
+            </Text>
+          )}
+        </View>
+        <View style={styles.rowBottom}>
+          <Text style={[styles.preview, isUnread && styles.unreadPreview]} numberOfLines={1}>
+            {item.last_message_text || 'No messages yet'}
+          </Text>
+          {isUnread && (
+            <View style={styles.unreadBadge}>
+              <Text style={styles.unreadBadgeText}>{item.unread_count}</Text>
+            </View>
+          )}
+        </View>
+      </View>
+    </Pressable>
+  );
+});
 
 export default function InboxListScreen() {
   const router = useRouter();
@@ -26,6 +73,7 @@ export default function InboxListScreen() {
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const refetchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const fetchConversations = useCallback(async () => {
     const { data, error } = await supabase
@@ -49,17 +97,25 @@ export default function InboxListScreen() {
     fetchConversations().finally(() => setLoading(false));
   }, [fetchConversations, accountId]);
 
-  // Live updates while the list is open — new/changed conversations
-  // (new inbound message, unread count, status) refresh the whole list.
-  // Simple full re-fetch for Phase 1; can optimize to patch-in-place later.
+  // Live updates while the list is open. A burst of several messages
+  // arriving together (common right after connecting a number) would
+  // otherwise trigger a full re-fetch per event; debounce collapses
+  // that into a single re-fetch per ~400ms window.
+  const scheduleRefetch = useCallback(() => {
+    if (refetchTimer.current) clearTimeout(refetchTimer.current);
+    refetchTimer.current = setTimeout(fetchConversations, 400);
+  }, [fetchConversations]);
+
+  useEffect(() => {
+    return () => {
+      if (refetchTimer.current) clearTimeout(refetchTimer.current);
+    };
+  }, []);
+
   useRealtime({
     channelName: 'mobile-inbox-list',
-    onConversationEvent: () => {
-      fetchConversations();
-    },
-    onMessageEvent: () => {
-      fetchConversations();
-    },
+    onConversationEvent: scheduleRefetch,
+    onMessageEvent: scheduleRefetch,
   });
 
   async function onRefresh() {
@@ -68,10 +124,15 @@ export default function InboxListScreen() {
     setRefreshing(false);
   }
 
+  const handlePress = useCallback(
+    (id: string) => router.push(`/inbox/${id}`),
+    [router],
+  );
+
   if (loading) {
     return (
       <View style={styles.center}>
-        <ActivityIndicator color="#a78bfa" />
+        <ActivityIndicator color={colors.accent} />
       </View>
     );
   }
@@ -82,86 +143,47 @@ export default function InboxListScreen() {
       data={conversations}
       keyExtractor={(item) => item.id}
       refreshControl={
-        <RefreshControl
-          refreshing={refreshing}
-          onRefresh={onRefresh}
-          tintColor="#a78bfa"
-        />
+        <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.accent} />
       }
       ListEmptyComponent={
         <View style={styles.center}>
           <Text style={styles.emptyText}>No conversations yet.</Text>
         </View>
       }
-      renderItem={({ item }) => {
-        const isUnread = item.unread_count > 0;
-        return (
-          <Pressable
-            style={styles.row}
-            onPress={() => router.push(`/inbox/${item.id}`)}
-          >
-            <View style={styles.avatar}>
-              <Text style={styles.avatarText}>
-                {(item.contact?.name || item.contact?.phone || '?')
-                  .charAt(0)
-                  .toUpperCase()}
-              </Text>
-            </View>
-            <View style={styles.rowContent}>
-              <Text
-                style={[styles.name, isUnread && styles.unreadText]}
-                numberOfLines={1}
-              >
-                {item.contact?.name || item.contact?.phone || 'Unknown'}
-              </Text>
-              <Text
-                style={[styles.preview, isUnread && styles.unreadPreview]}
-                numberOfLines={1}
-              >
-                {item.last_message_text || 'No messages yet'}
-              </Text>
-            </View>
-            {isUnread && (
-              <View style={styles.unreadBadge}>
-                <Text style={styles.unreadBadgeText}>{item.unread_count}</Text>
-              </View>
-            )}
-          </Pressable>
-        );
-      }}
+      renderItem={({ item }) => <ConversationRow item={item} onPress={handlePress} />}
+      getItemLayout={(_, index) => ({ length: ROW_HEIGHT, offset: ROW_HEIGHT * index, index })}
+      initialNumToRender={12}
+      maxToRenderPerBatch={12}
+      windowSize={7}
+      removeClippedSubviews
     />
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#020617' },
-  center: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 24 },
-  emptyText: { color: '#64748b' },
+  container: { flex: 1, backgroundColor: colors.bg },
+  center: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: spacing.xl },
+  emptyText: { color: colors.textFaint },
   row: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingHorizontal: 16,
-    paddingVertical: 14,
+    paddingHorizontal: spacing.lg,
+    height: ROW_HEIGHT,
     borderBottomWidth: 1,
-    borderBottomColor: '#1e293b',
-    gap: 12,
+    borderBottomColor: colors.border,
+    gap: spacing.md,
   },
-  avatar: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    backgroundColor: 'rgba(124,58,237,0.15)',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  avatarText: { color: '#a78bfa', fontWeight: '700', fontSize: 16 },
-  rowContent: { flex: 1 },
-  name: { color: '#e2e8f0', fontSize: 15, fontWeight: '500' },
-  unreadText: { color: '#f8fafc', fontWeight: '700' },
-  preview: { color: '#64748b', fontSize: 13, marginTop: 2 },
-  unreadPreview: { color: '#94a3b8' },
+  rowPressed: { backgroundColor: colors.surface },
+  rowContent: { flex: 1, gap: 4 },
+  rowTop: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  rowBottom: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  name: { color: colors.textSecondary, fontSize: 15, fontWeight: '500', flexShrink: 1 },
+  unreadText: { color: colors.text, fontWeight: '700' },
+  time: { color: colors.textFaint, fontSize: 11 },
+  preview: { color: colors.textFaint, fontSize: 13, flex: 1, marginRight: spacing.sm },
+  unreadPreview: { color: colors.textMuted },
   unreadBadge: {
-    backgroundColor: '#7c3aed',
+    backgroundColor: colors.primary,
     borderRadius: 10,
     minWidth: 20,
     height: 20,
@@ -169,5 +191,5 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     paddingHorizontal: 5,
   },
-  unreadBadgeText: { color: '#fff', fontSize: 11, fontWeight: '700' },
+  unreadBadgeText: { color: colors.white, fontSize: 11, fontWeight: '700' },
 });

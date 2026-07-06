@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   View,
   Text,
@@ -84,29 +84,36 @@ export default function DashboardScreen() {
   const [activity, setActivity] = useState<ActivityItem[]>([]);
   const [error, setError] = useState<string | null>(null);
 
-  const loadAll = useCallback(
-    async (days: number) => {
-      setError(null);
-      try {
-        const [m, s, p, r, a] = await Promise.all([
-          loadMetrics(supabase),
-          loadConversationsSeries(supabase, days),
-          loadPipelineDonut(supabase),
-          loadResponseTime(supabase),
-          loadActivity(supabase, 20),
-        ]);
-        setMetrics(m);
-        setSeries(s);
-        setPipeline(p);
-        setResponseTime(r);
-        setActivity(a);
-      } catch (err) {
-        console.error('[Dashboard] load error:', err);
-        setError(err instanceof Error ? err.message : 'Failed to load dashboard data');
-      }
-    },
-    [],
-  );
+  // Only the time-series chart actually depends on `days` — metrics,
+  // pipeline, response time, and activity are range-independent, so
+  // splitting this avoids re-running all 5 queries every time the
+  // user taps a different 7d/30d/90d chip.
+  const loadStatic = useCallback(async () => {
+    setError(null);
+    try {
+      const [m, p, r, a] = await Promise.all([
+        loadMetrics(supabase),
+        loadPipelineDonut(supabase),
+        loadResponseTime(supabase),
+        loadActivity(supabase, 20),
+      ]);
+      setMetrics(m);
+      setPipeline(p);
+      setResponseTime(r);
+      setActivity(a);
+    } catch (err) {
+      console.error('[Dashboard] load error:', err);
+      setError(err instanceof Error ? err.message : 'Failed to load dashboard data');
+    }
+  }, []);
+
+  const loadSeries = useCallback(async (days: number) => {
+    try {
+      setSeries(await loadConversationsSeries(supabase, days));
+    } catch (err) {
+      console.error('[Dashboard] series load error:', err);
+    }
+  }, []);
 
   // `accountId` is a dependency (not just read) so switching workspace
   // (Phase 4) re-fetches everything under the new account — tab
@@ -114,14 +121,56 @@ export default function DashboardScreen() {
   // doesn't re-run this effect the way a full page reload would.
   useEffect(() => {
     setLoading(true);
-    loadAll(rangeDays).finally(() => setLoading(false));
-  }, [rangeDays, loadAll, accountId]);
+    loadStatic().finally(() => setLoading(false));
+  }, [loadStatic, accountId]);
+
+  // Separate from the effect above so a range-chip tap (rangeDays
+  // change) only re-fetches the series, not metrics/pipeline/activity
+  // too. Still re-runs on accountId change so a workspace switch loads
+  // the new account's series alongside everything else.
+  useEffect(() => {
+    loadSeries(rangeDays);
+  }, [loadSeries, rangeDays, accountId]);
 
   async function onRefresh() {
     setRefreshing(true);
-    await loadAll(rangeDays);
+    await Promise.all([loadStatic(), loadSeries(rangeDays)]);
     setRefreshing(false);
   }
+
+  // These must run unconditionally on every render (Rules of Hooks) —
+  // they used to live after the `if (loading) return` below, which
+  // skipped them entirely on the very first render and threw "Rendered
+  // more hooks than during the previous render" the moment loading
+  // flipped false.
+  const lineData = useMemo(
+    () => series.map((p) => ({ value: p.incoming, label: p.day.slice(5) })),
+    [series],
+  );
+  const lineData2 = useMemo(
+    () => series.map((p) => ({ value: p.outgoing, label: p.day.slice(5) })),
+    [series],
+  );
+
+  const pieData = useMemo(
+    () =>
+      pipeline?.stages.map((s) => ({
+        value: s.totalValue || s.dealCount,
+        color: s.color,
+        text: s.name,
+      })) ?? [],
+    [pipeline],
+  );
+
+  const barData = useMemo(
+    () =>
+      responseTime?.buckets.map((b) => ({
+        value: b.avgMinutes ?? 0,
+        label: DOW_SHORT_MON_FIRST[b.dow],
+        frontColor: b.samples > 0 ? '#7c3aed' : '#334155',
+      })) ?? [],
+    [responseTime],
+  );
 
   if (loading) {
     return (
@@ -130,23 +179,6 @@ export default function DashboardScreen() {
       </View>
     );
   }
-
-  const lineData = series.map((p) => ({ value: p.incoming, label: p.day.slice(5) }));
-  const lineData2 = series.map((p) => ({ value: p.outgoing, label: p.day.slice(5) }));
-
-  const pieData =
-    pipeline?.stages.map((s) => ({
-      value: s.totalValue || s.dealCount,
-      color: s.color,
-      text: s.name,
-    })) ?? [];
-
-  const barData =
-    responseTime?.buckets.map((b) => ({
-      value: b.avgMinutes ?? 0,
-      label: DOW_SHORT_MON_FIRST[b.dow],
-      frontColor: b.samples > 0 ? '#7c3aed' : '#334155',
-    })) ?? [];
 
   return (
     <ScrollView

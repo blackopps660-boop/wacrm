@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, memo } from 'react';
 import {
   View,
   Text,
@@ -11,9 +11,57 @@ import {
   Platform,
 } from 'react-native';
 import { useLocalSearchParams, useNavigation } from 'expo-router';
+import { Ionicons } from '@expo/vector-icons';
 import { supabase, apiFetch } from '../../../lib/supabase';
 import { useRealtime } from '../../../hooks/use-realtime';
+import { colors, radius, spacing } from '../../../lib/theme';
 import type { Message } from '../../../lib/types';
+
+const MessageBubble = memo(function MessageBubble({ item }: { item: Message }) {
+  const isAgent = item.sender_type === 'agent' || item.sender_type === 'bot';
+  return (
+    <View style={[styles.bubbleRow, isAgent ? styles.bubbleRowAgent : styles.bubbleRowCustomer]}>
+      <View style={[styles.bubble, isAgent ? styles.bubbleAgent : styles.bubbleCustomer]}>
+        <Text style={isAgent ? styles.bubbleTextAgent : styles.bubbleTextCustomer}>
+          {item.content_text || `[${item.content_type}]`}
+        </Text>
+        <View style={styles.bubbleFooter}>
+          <Text style={isAgent ? styles.bubbleTimeAgent : styles.bubbleTimeCustomer}>
+            {new Date(item.created_at).toLocaleTimeString(undefined, {
+              hour: '2-digit',
+              minute: '2-digit',
+            })}
+          </Text>
+          {isAgent && item.status && (
+            <Ionicons
+              name={
+                item.status === 'failed'
+                  ? 'alert-circle'
+                  : item.status === 'read'
+                    ? 'checkmark-done'
+                    : item.status === 'delivered'
+                      ? 'checkmark-done'
+                      : 'checkmark'
+              }
+              size={13}
+              color={
+                item.status === 'failed'
+                  ? colors.dangerMuted
+                  : item.status === 'read'
+                    ? colors.info
+                    : 'rgba(255,255,255,0.7)'
+              }
+              style={{ marginLeft: 4 }}
+            />
+          )}
+        </View>
+        {item.status === 'failed' && (
+          <Text style={styles.failedText}>Failed{item.error_message ? `: ${item.error_message}` : ''}</Text>
+        )}
+      </View>
+    </View>
+  );
+});
 
 export default function MessageThreadScreen() {
   const { id: conversationId } = useLocalSearchParams<{ id: string }>();
@@ -122,7 +170,7 @@ export default function MessageThreadScreen() {
   if (loading) {
     return (
       <View style={styles.center}>
-        <ActivityIndicator color="#a78bfa" />
+        <ActivityIndicator color={colors.accent} />
       </View>
     );
   }
@@ -139,33 +187,10 @@ export default function MessageThreadScreen() {
         keyExtractor={(item) => item.id}
         contentContainerStyle={styles.listContent}
         onContentSizeChange={() => listRef.current?.scrollToEnd({ animated: false })}
-        renderItem={({ item }) => {
-          const isAgent = item.sender_type === 'agent' || item.sender_type === 'bot';
-          return (
-            <View
-              style={[
-                styles.bubbleRow,
-                isAgent ? styles.bubbleRowAgent : styles.bubbleRowCustomer,
-              ]}
-            >
-              <View
-                style={[
-                  styles.bubble,
-                  isAgent ? styles.bubbleAgent : styles.bubbleCustomer,
-                ]}
-              >
-                <Text style={isAgent ? styles.bubbleTextAgent : styles.bubbleTextCustomer}>
-                  {item.content_text || `[${item.content_type}]`}
-                </Text>
-                {item.status === 'failed' && (
-                  <Text style={styles.failedText}>
-                    Failed{item.error_message ? `: ${item.error_message}` : ''}
-                  </Text>
-                )}
-              </View>
-            </View>
-          );
-        }}
+        renderItem={({ item }) => <MessageBubble item={item} />}
+        initialNumToRender={20}
+        maxToRenderPerBatch={20}
+        windowSize={10}
       />
 
       {sendError && (
@@ -178,20 +203,24 @@ export default function MessageThreadScreen() {
         <TextInput
           style={styles.composerInput}
           placeholder="Type a message…"
-          placeholderTextColor="#64748b"
+          placeholderTextColor={colors.textFaint}
           value={text}
           onChangeText={setText}
           multiline
         />
         <Pressable
-          style={[styles.sendButton, (!text.trim() || sending) && styles.sendButtonDisabled]}
+          style={({ pressed }) => [
+            styles.sendButton,
+            (!text.trim() || sending) && styles.sendButtonDisabled,
+            pressed && styles.sendButtonPressed,
+          ]}
           onPress={handleSend}
           disabled={!text.trim() || sending}
         >
           {sending ? (
-            <ActivityIndicator color="#fff" size="small" />
+            <ActivityIndicator color={colors.white} size="small" />
           ) : (
-            <Text style={styles.sendButtonText}>Send</Text>
+            <Ionicons name="send" size={17} color={colors.white} />
           )}
         </Pressable>
       </View>
@@ -200,59 +229,67 @@ export default function MessageThreadScreen() {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#020617' },
+  container: { flex: 1, backgroundColor: colors.bg },
   center: { flex: 1, alignItems: 'center', justifyContent: 'center' },
-  listContent: { padding: 12, gap: 6 },
+  listContent: { padding: spacing.md, gap: 6 },
   bubbleRow: { flexDirection: 'row' },
   bubbleRowAgent: { justifyContent: 'flex-end' },
   bubbleRowCustomer: { justifyContent: 'flex-start' },
   bubble: {
     maxWidth: '80%',
-    borderRadius: 14,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
+    borderRadius: radius.md + 2,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
   },
   bubbleAgent: {
-    backgroundColor: '#3f3a52',
+    backgroundColor: colors.primary,
     borderBottomRightRadius: 4,
   },
   bubbleCustomer: {
-    backgroundColor: '#1e293b',
+    backgroundColor: colors.surface,
     borderBottomLeftRadius: 4,
   },
-  bubbleTextAgent: { color: '#f1f0f7' },
-  bubbleTextCustomer: { color: '#e2e8f0' },
-  failedText: { color: '#fca5a5', fontSize: 11, marginTop: 4 },
+  bubbleTextAgent: { color: colors.white, fontSize: 15 },
+  bubbleTextCustomer: { color: colors.textSecondary, fontSize: 15 },
+  bubbleFooter: { flexDirection: 'row', justifyContent: 'flex-end', alignItems: 'center', marginTop: 3 },
+  bubbleTimeAgent: { color: 'rgba(255,255,255,0.7)', fontSize: 10 },
+  bubbleTimeCustomer: { color: colors.textFaint, fontSize: 10 },
+  failedText: { color: colors.dangerMuted, fontSize: 11, marginTop: 4 },
   errorBar: {
-    backgroundColor: 'rgba(239,68,68,0.1)',
-    paddingVertical: 8,
-    paddingHorizontal: 12,
+    backgroundColor: colors.dangerBg,
+    paddingVertical: spacing.sm,
+    paddingHorizontal: spacing.md,
   },
-  errorBarText: { color: '#fca5a5', fontSize: 12 },
+  errorBarText: { color: colors.dangerMuted, fontSize: 12 },
   composer: {
     flexDirection: 'row',
     alignItems: 'flex-end',
-    padding: 10,
-    gap: 8,
+    padding: spacing.sm + 2,
+    gap: spacing.sm,
     borderTopWidth: 1,
-    borderTopColor: '#1e293b',
-    backgroundColor: '#0f172a',
+    borderTopColor: colors.border,
+    backgroundColor: colors.surface,
   },
   composerInput: {
     flex: 1,
-    backgroundColor: '#1e293b',
+    backgroundColor: colors.bg,
     borderRadius: 20,
-    paddingHorizontal: 16,
-    paddingVertical: 10,
-    color: '#f8fafc',
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.sm + 2,
+    color: colors.text,
+    fontSize: 15,
     maxHeight: 100,
+    borderWidth: 1,
+    borderColor: colors.border,
   },
   sendButton: {
-    backgroundColor: '#7c3aed',
+    backgroundColor: colors.primary,
     borderRadius: 20,
-    paddingHorizontal: 16,
-    paddingVertical: 10,
+    width: 42,
+    height: 42,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
+  sendButtonPressed: { opacity: 0.85 },
   sendButtonDisabled: { opacity: 0.5 },
-  sendButtonText: { color: '#fff', fontWeight: '600' },
 });
