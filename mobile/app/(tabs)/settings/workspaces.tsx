@@ -4,6 +4,7 @@ import { useRouter } from 'expo-router';
 import { supabase } from '../../../lib/supabase';
 import { useAuth } from '../../../hooks/use-auth';
 import { loadWorkspaces, switchWorkspace, type Workspace } from '../../../lib/workspaces/queries';
+import { syncPushTokenWithBackend } from '../../../lib/push-notifications';
 
 export default function WorkspacesScreen() {
   const router = useRouter();
@@ -41,6 +42,10 @@ export default function WorkspacesScreen() {
       // the auth context's profile/account, then remount the tab stack
       // so Dashboard/Inbox/Contacts re-fetch under the new account_id.
       await refreshProfile();
+      // Re-point this device's push token at the new account — otherwise
+      // it stays registered under the workspace it was on at login time,
+      // so pushes for the new workspace's messages never reach it.
+      void syncPushTokenWithBackend();
       router.replace('/(tabs)');
     } catch (err) {
       console.error('[Workspaces] switch error:', err);

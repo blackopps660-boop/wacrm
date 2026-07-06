@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "813735769192",
+    "project_id": "blinkmoon-42eaa",
+    "storage_bucket": "blinkmoon-42eaa.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:813735769192:android:23c445e99ebb1d0d9977dd",
+        "android_client_info": {
+          "package_name": "com.blinkmoon.io.blinkmoonmobile"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyA2de6rtVETNioJJs-0ViqfHFv3ELh191o"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
