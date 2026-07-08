@@ -200,6 +200,9 @@ export interface Conversation {
   created_at: string;
   updated_at: string;
   contact?: Contact;
+  pinned_at?: string | null;
+  muted_at?: string | null;
+  archived_at?: string | null;
 }
 
 // ============================================================

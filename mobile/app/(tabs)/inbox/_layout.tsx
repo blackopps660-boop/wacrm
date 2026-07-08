@@ -13,6 +13,7 @@ export default function InboxLayout() {
       }}
     >
       <Stack.Screen name="index" options={{ title: 'Inbox' }} />
+      <Stack.Screen name="archived" options={{ title: 'Archived' }} />
       {/* [id] renders its own header (contact name + lifecycle stage
           pill + search/3-dot actions) — the default Stack header would
           just duplicate the title bar above it. */}

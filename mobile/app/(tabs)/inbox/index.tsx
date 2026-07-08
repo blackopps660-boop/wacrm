@@ -8,6 +8,9 @@ import {
   StyleSheet,
   ActivityIndicator,
   RefreshControl,
+  Modal,
+  type StyleProp,
+  type TextStyle,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
@@ -22,19 +25,65 @@ import type { Conversation, LifecycleStage } from '../../../lib/types';
 
 const PAGE_SIZE = 30;
 const ROW_HEIGHT = 74;
+const SEARCH_DEBOUNCE_MS = 350;
 // Same embed shape as the web app's CONVERSATION_SELECT
 // (src/lib/inbox/conversations.ts), plus the lifecycle stage join so
 // the filter chips below can match on it client-side.
 const CONVERSATION_SELECT = '*, contact:contacts(*, lifecycle_stage:lifecycle_stages(*))';
 
+/** Splits `text` around the (case-insensitive) first match of `term` so the caller can render the middle segment highlighted. Returns null when there's nothing to highlight. */
+function splitOnMatch(text: string, term: string): [string, string, string] | null {
+  if (!term) return null;
+  const idx = text.toLowerCase().indexOf(term.toLowerCase());
+  if (idx === -1) return null;
+  return [text.slice(0, idx), text.slice(idx, idx + term.length), text.slice(idx + term.length)];
+}
+
+function HighlightedText({
+  text,
+  term,
+  style,
+  highlightStyle,
+  numberOfLines,
+}: {
+  text: string;
+  term: string;
+  style: StyleProp<TextStyle>;
+  highlightStyle: StyleProp<TextStyle>;
+  numberOfLines?: number;
+}) {
+  const parts = splitOnMatch(text, term);
+  if (!parts) {
+    return (
+      <Text style={style} numberOfLines={numberOfLines}>
+        {text}
+      </Text>
+    );
+  }
+  const [before, match, after] = parts;
+  return (
+    <Text style={style} numberOfLines={numberOfLines}>
+      {before}
+      <Text style={highlightStyle}>{match}</Text>
+      {after}
+    </Text>
+  );
+}
+
 const ConversationRow = memo(function ConversationRow({
   item,
   onPress,
+  onLongPress,
   styles,
+  colors,
+  searchTerm,
 }: {
   item: Conversation;
   onPress: (item: Conversation) => void;
+  onLongPress: (item: Conversation) => void;
   styles: ReturnType<typeof makeStyles>;
+  colors: Palette;
+  searchTerm: string;
 }) {
   const isUnread = item.unread_count > 0;
   const label = item.contact?.name || item.contact?.phone || 'Unknown';
@@ -42,13 +91,27 @@ const ConversationRow = memo(function ConversationRow({
     <Pressable
       style={({ pressed }) => [styles.row, pressed && styles.rowPressed]}
       onPress={() => onPress(item)}
+      onLongPress={() => onLongPress(item)}
+      delayLongPress={350}
     >
       <Avatar label={label} seed={item.contact?.id} size={48} />
       <View style={styles.rowContent}>
         <View style={styles.rowTop}>
-          <Text style={[styles.name, isUnread && styles.unreadText]} numberOfLines={1}>
-            {label}
-          </Text>
+          <View style={styles.nameRow}>
+            {!!item.pinned_at && (
+              <Ionicons name="pin" size={12} color={colors.textFaint} style={styles.rowIcon} />
+            )}
+            {!!item.muted_at && (
+              <Ionicons name="volume-mute" size={13} color={colors.textFaint} style={styles.rowIcon} />
+            )}
+            <HighlightedText
+              text={label}
+              term={searchTerm}
+              style={[styles.name, isUnread && styles.unreadText]}
+              highlightStyle={styles.highlight}
+              numberOfLines={1}
+            />
+          </View>
           {item.last_message_at && (
             <Text style={styles.time}>
               {new Date(item.last_message_at).toLocaleDateString(undefined, {
@@ -59,9 +122,13 @@ const ConversationRow = memo(function ConversationRow({
           )}
         </View>
         <View style={styles.rowBottom}>
-          <Text style={[styles.preview, isUnread && styles.unreadPreview]} numberOfLines={1}>
-            {item.last_message_text || 'No messages yet'}
-          </Text>
+          <HighlightedText
+            text={item.last_message_text || 'No messages yet'}
+            term={searchTerm}
+            style={[styles.preview, isUnread && styles.unreadPreview]}
+            highlightStyle={styles.highlight}
+            numberOfLines={1}
+          />
           {isUnread && (
             <View style={styles.unreadBadge}>
               <Text style={styles.unreadBadgeText}>{item.unread_count}</Text>
@@ -89,10 +156,22 @@ export default function InboxListScreen() {
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [stages, setStages] = useState<LifecycleStage[]>([]);
   const [selectedStageId, setSelectedStageId] = useState<string | null>(null);
+  const [searchInput, setSearchInput] = useState('');
   const [search, setSearch] = useState('');
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [actionTarget, setActionTarget] = useState<Conversation | null>(null);
   const refetchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Debounced the same way Contacts' search already does — filtering the
+  // FlatList's data on every single keystroke while it also has
+  // `removeClippedSubviews` (below) is an unstable combination on
+  // Android; without this the app could crash on the very first
+  // character typed.
+  useEffect(() => {
+    const timer = setTimeout(() => setSearch(searchInput.trim()), SEARCH_DEBOUNCE_MS);
+    return () => clearTimeout(timer);
+  }, [searchInput]);
 
   const fetchConversations = useCallback(async () => {
     const { data, error } = await supabase
@@ -164,11 +243,34 @@ export default function InboxListScreen() {
     [router],
   );
 
+  async function handleTogglePin(item: Conversation) {
+    setActionTarget(null);
+    const next = item.pinned_at ? null : new Date().toISOString();
+    setConversations((prev) => prev.map((c) => (c.id === item.id ? { ...c, pinned_at: next } : c)));
+    await supabase.from('conversations').update({ pinned_at: next }).eq('id', item.id);
+  }
+
+  async function handleToggleMute(item: Conversation) {
+    setActionTarget(null);
+    const next = item.muted_at ? null : new Date().toISOString();
+    setConversations((prev) => prev.map((c) => (c.id === item.id ? { ...c, muted_at: next } : c)));
+    await supabase.from('conversations').update({ muted_at: next }).eq('id', item.id);
+  }
+
+  async function handleToggleArchive(item: Conversation) {
+    setActionTarget(null);
+    const next = item.archived_at ? null : new Date().toISOString();
+    setConversations((prev) => prev.map((c) => (c.id === item.id ? { ...c, archived_at: next } : c)));
+    await supabase.from('conversations').update({ archived_at: next }).eq('id', item.id);
+  }
+
+  const archivedCount = useMemo(() => conversations.filter((c) => c.archived_at).length, [conversations]);
+
   // Client-side — the list is already small (PAGE_SIZE=30, realtime-
   // kept-fresh) so a network round-trip per keystroke would only add
   // latency for no benefit.
   const filtered = useMemo(() => {
-    let rows = conversations;
+    let rows = conversations.filter((c) => !c.archived_at);
     if (selectedStageId) {
       rows = rows.filter((c) => c.contact?.lifecycle_stage_id === selectedStageId);
     }
@@ -181,7 +283,12 @@ export default function InboxListScreen() {
         return name.includes(term) || phone.includes(term) || preview.includes(term);
       });
     }
-    return rows;
+    // Pinned conversations float to the top (most recently pinned
+    // first); everything else keeps the server's last_message_at order.
+    const pinned = rows.filter((c) => c.pinned_at);
+    const rest = rows.filter((c) => !c.pinned_at);
+    pinned.sort((a, b) => new Date(b.pinned_at!).getTime() - new Date(a.pinned_at!).getTime());
+    return [...pinned, ...rest];
   }, [conversations, selectedStageId, search]);
 
   if (loading) {
@@ -200,11 +307,17 @@ export default function InboxListScreen() {
           style={styles.searchInput}
           placeholder="Search chats, contacts, messages…"
           placeholderTextColor={colors.textFaint}
-          value={search}
-          onChangeText={setSearch}
+          value={searchInput}
+          onChangeText={setSearchInput}
         />
-        {search.length > 0 && (
-          <Pressable onPress={() => setSearch('')} hitSlop={8}>
+        {searchInput.length > 0 && (
+          <Pressable
+            onPress={() => {
+              setSearchInput('');
+              setSearch('');
+            }}
+            hitSlop={8}
+          >
             <Ionicons name="close-circle" size={17} color={colors.textFaint} />
           </Pressable>
         )}
@@ -238,6 +351,16 @@ export default function InboxListScreen() {
         </View>
       )}
 
+      {archivedCount > 0 && (
+        <Pressable style={styles.archivedRow} onPress={() => router.push('/inbox/archived')}>
+          <Ionicons name="archive-outline" size={18} color={colors.textFaint} />
+          <Text style={styles.archivedRowText}>Archived</Text>
+          <View style={styles.archivedBadge}>
+            <Text style={styles.archivedBadgeText}>{archivedCount}</Text>
+          </View>
+        </Pressable>
+      )}
+
       <FlatList
         style={styles.list}
         data={filtered}
@@ -252,13 +375,64 @@ export default function InboxListScreen() {
             </Text>
           </View>
         }
-        renderItem={({ item }) => <ConversationRow item={item} onPress={handlePress} styles={styles} />}
+        renderItem={({ item }) => (
+          <ConversationRow
+            item={item}
+            onPress={handlePress}
+            onLongPress={setActionTarget}
+            styles={styles}
+            colors={colors}
+            searchTerm={search}
+          />
+        )}
         getItemLayout={(_, index) => ({ length: ROW_HEIGHT, offset: ROW_HEIGHT * index, index })}
         initialNumToRender={12}
         maxToRenderPerBatch={12}
         windowSize={7}
         removeClippedSubviews
       />
+
+      {/* Long-press action sheet — pin/mute/archive */}
+      <Modal
+        visible={!!actionTarget}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setActionTarget(null)}
+      >
+        <Pressable style={styles.modalBackdrop} onPress={() => setActionTarget(null)}>
+          <View style={styles.menuCard}>
+            <View style={styles.sheetHandle} />
+            {actionTarget && (
+              <>
+                <Pressable style={styles.menuItem} onPress={() => handleTogglePin(actionTarget)}>
+                  <Ionicons
+                    name={actionTarget.pinned_at ? 'pin' : 'pin-outline'}
+                    size={20}
+                    color={colors.textSecondary}
+                  />
+                  <Text style={styles.menuItemText}>
+                    {actionTarget.pinned_at ? 'Unpin Chat' : 'Pin Chat'}
+                  </Text>
+                </Pressable>
+                <Pressable style={styles.menuItem} onPress={() => handleToggleMute(actionTarget)}>
+                  <Ionicons
+                    name={actionTarget.muted_at ? 'volume-high-outline' : 'volume-mute-outline'}
+                    size={20}
+                    color={colors.textSecondary}
+                  />
+                  <Text style={styles.menuItemText}>
+                    {actionTarget.muted_at ? 'Unmute Chat' : 'Mute Chat'}
+                  </Text>
+                </Pressable>
+                <Pressable style={styles.menuItem} onPress={() => handleToggleArchive(actionTarget)}>
+                  <Ionicons name="archive-outline" size={20} color={colors.textSecondary} />
+                  <Text style={styles.menuItemText}>Archive Chat</Text>
+                </Pressable>
+              </>
+            )}
+          </View>
+        </Pressable>
+      </Modal>
     </View>
   );
 }
@@ -312,8 +486,11 @@ function makeStyles(colors: Palette) {
     rowContent: { flex: 1, gap: 4 },
     rowTop: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
     rowBottom: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+    nameRow: { flexDirection: 'row', alignItems: 'center', flexShrink: 1, gap: 3 },
+    rowIcon: { marginRight: 1 },
     name: { color: colors.textSecondary, fontSize: 15, fontWeight: '500', flexShrink: 1 },
     unreadText: { color: colors.text, fontWeight: '700' },
+    highlight: { color: colors.primary, fontWeight: '700', backgroundColor: colors.primaryMuted },
     time: { color: colors.textFaint, fontSize: 11 },
     preview: { color: colors.textFaint, fontSize: 13, flex: 1, marginRight: spacing.sm },
     unreadPreview: { color: colors.textMuted },
@@ -330,5 +507,57 @@ function makeStyles(colors: Palette) {
     stageRow: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 1 },
     stageDot: { width: 6, height: 6, borderRadius: 3 },
     stageText: { color: colors.textFaint, fontSize: 10 },
+    archivedRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: spacing.sm,
+      paddingHorizontal: spacing.lg,
+      paddingVertical: spacing.sm + 2,
+      borderBottomWidth: 1,
+      borderBottomColor: colors.border,
+    },
+    archivedRowText: { flex: 1, color: colors.textSecondary, fontSize: 14, fontWeight: '500' },
+    archivedBadge: {
+      backgroundColor: colors.surfaceRaised,
+      borderRadius: radius.pill,
+      minWidth: 22,
+      height: 22,
+      alignItems: 'center',
+      justifyContent: 'center',
+      paddingHorizontal: 6,
+    },
+    archivedBadgeText: { color: colors.textMuted, fontSize: 12, fontWeight: '600' },
+    modalBackdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end' },
+    menuCard: {
+      backgroundColor: colors.surface,
+      borderTopLeftRadius: radius.lg + 8,
+      borderTopRightRadius: radius.lg + 8,
+      paddingVertical: spacing.md,
+      paddingHorizontal: spacing.lg,
+      paddingBottom: spacing.xl,
+      gap: 4,
+      shadowColor: '#000',
+      shadowOpacity: 0.2,
+      shadowRadius: 12,
+      shadowOffset: { width: 0, height: -2 },
+      elevation: 8,
+    },
+    sheetHandle: {
+      alignSelf: 'center',
+      width: 36,
+      height: 4,
+      borderRadius: 2,
+      backgroundColor: colors.borderStrong,
+      marginBottom: spacing.sm,
+    },
+    menuItem: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: spacing.md,
+      paddingVertical: spacing.md,
+      borderBottomWidth: 1,
+      borderBottomColor: colors.border,
+    },
+    menuItemText: { color: colors.textSecondary, fontSize: 15 },
   });
 }

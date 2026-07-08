@@ -18,13 +18,21 @@ vi.mock('expo-server-sdk', () => ({
 
 import { dispatchPushForNewMessage } from './dispatch';
 
-function makeDb(tokenRows: { expo_push_token: string }[], unreadCount = 1) {
+function makeDb(
+  tokenRows: { expo_push_token: string }[],
+  unreadCount = 1,
+  mutedAt: string | null = null,
+) {
   const from = (table: string) => {
     if (table === 'conversations') {
       return {
         select: () => ({
           eq: () => ({
-            maybeSingle: () => Promise.resolve({ data: { unread_count: unreadCount }, error: null }),
+            maybeSingle: () =>
+              Promise.resolve({
+                data: { unread_count: unreadCount, muted_at: mutedAt },
+                error: null,
+              }),
           }),
         }),
       };
@@ -103,6 +111,14 @@ describe('dispatchPushForNewMessage', () => {
     expect(messages[0].body).toBe('3 new messages · Hello there');
     expect(messages[0].tag).toBe('conv-1');
     expect(messages[0].collapseId).toBe('conv-1');
+  });
+
+  it('skips delivery entirely for a muted conversation', async () => {
+    await dispatchPushForNewMessage(
+      makeDb([{ expo_push_token: 'ExponentPushToken[abc]' }], 1, '2026-01-01T00:00:00Z'),
+      baseArgs,
+    );
+    expect(sendPushNotificationsAsync).not.toHaveBeenCalled();
   });
 
   it('never throws even if the DB query fails', async () => {

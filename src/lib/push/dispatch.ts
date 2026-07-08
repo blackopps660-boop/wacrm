@@ -58,9 +58,15 @@ export async function dispatchPushForNewMessage(
     // the same conversation in the tray rather than stacking beside it.
     const { data: convRow } = await db
       .from('conversations')
-      .select('unread_count')
+      .select('unread_count, muted_at')
       .eq('id', conversationId)
       .maybeSingle()
+
+    // Muted from the mobile inbox's long-press menu (migration 048) —
+    // the conversation still updates live via Realtime/unread_count,
+    // this only skips the push banner, same as WhatsApp's own mute.
+    if ((convRow as { muted_at: string | null } | null)?.muted_at) return
+
     const unreadCount = (convRow as { unread_count: number } | null)?.unread_count ?? 1
 
     const truncatedPreview =
