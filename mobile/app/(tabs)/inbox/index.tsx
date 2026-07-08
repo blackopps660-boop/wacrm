@@ -21,7 +21,7 @@ import { useRealtime } from '../../../hooks/use-realtime';
 import { loadLifecycleStages } from '../../../lib/contacts/queries';
 import { Avatar } from '../../../components/Avatar';
 import { radius, scaleFontSizes, spacing, type Palette } from '../../../lib/theme';
-import type { Conversation, LifecycleStage } from '../../../lib/types';
+import type { Conversation, ConversationStatus, LifecycleStage } from '../../../lib/types';
 
 const PAGE_SIZE = 30;
 const ROW_HEIGHT = 74;
@@ -30,6 +30,13 @@ const SEARCH_DEBOUNCE_MS = 350;
 // (src/lib/inbox/conversations.ts), plus the lifecycle stage join so
 // the filter chips below can match on it client-side.
 const CONVERSATION_SELECT = '*, contact:contacts(*, lifecycle_stage:lifecycle_stages(*))';
+
+const STATUS_TABS: { value: 'all' | ConversationStatus; label: string }[] = [
+  { value: 'all', label: 'All' },
+  { value: 'open', label: 'Open' },
+  { value: 'pending', label: 'Pending' },
+  { value: 'closed', label: 'Closed' },
+];
 
 /** Splits `text` around the (case-insensitive) first match of `term` so the caller can render the middle segment highlighted. Returns null when there's nothing to highlight. */
 function splitOnMatch(text: string, term: string): [string, string, string] | null {
@@ -135,12 +142,22 @@ const ConversationRow = memo(function ConversationRow({
             </View>
           )}
         </View>
-        {item.contact?.lifecycle_stage && (
+        {(item.contact?.lifecycle_stage || item.status === 'closed') && (
           <View style={styles.stageRow}>
-            <View style={[styles.stageDot, { backgroundColor: item.contact.lifecycle_stage.color }]} />
-            <Text style={styles.stageText} numberOfLines={1}>
-              {item.contact.lifecycle_stage.name}
-            </Text>
+            {item.contact?.lifecycle_stage && (
+              <>
+                <View style={[styles.stageDot, { backgroundColor: item.contact.lifecycle_stage.color }]} />
+                <Text style={styles.stageText} numberOfLines={1}>
+                  {item.contact.lifecycle_stage.name}
+                </Text>
+              </>
+            )}
+            {item.status === 'closed' && (
+              <View style={styles.closedBadge}>
+                <Ionicons name="checkmark-circle" size={11} color={colors.success} />
+                <Text style={styles.closedBadgeText}>Closed</Text>
+              </View>
+            )}
           </View>
         )}
       </View>
@@ -156,6 +173,7 @@ export default function InboxListScreen() {
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [stages, setStages] = useState<LifecycleStage[]>([]);
   const [selectedStageId, setSelectedStageId] = useState<string | null>(null);
+  const [statusFilter, setStatusFilter] = useState<'all' | ConversationStatus>('all');
   const [searchInput, setSearchInput] = useState('');
   const [search, setSearch] = useState('');
   const [loading, setLoading] = useState(true);
@@ -271,6 +289,9 @@ export default function InboxListScreen() {
   // latency for no benefit.
   const filtered = useMemo(() => {
     let rows = conversations.filter((c) => !c.archived_at);
+    if (statusFilter !== 'all') {
+      rows = rows.filter((c) => c.status === statusFilter);
+    }
     if (selectedStageId) {
       rows = rows.filter((c) => c.contact?.lifecycle_stage_id === selectedStageId);
     }
@@ -289,7 +310,7 @@ export default function InboxListScreen() {
     const rest = rows.filter((c) => !c.pinned_at);
     pinned.sort((a, b) => new Date(b.pinned_at!).getTime() - new Date(a.pinned_at!).getTime());
     return [...pinned, ...rest];
-  }, [conversations, selectedStageId, search]);
+  }, [conversations, statusFilter, selectedStageId, search]);
 
   if (loading) {
     return (
@@ -301,6 +322,21 @@ export default function InboxListScreen() {
 
   return (
     <View style={styles.container}>
+      <View style={styles.statusTabs}>
+        {STATUS_TABS.map((tab) => {
+          const active = statusFilter === tab.value;
+          return (
+            <Pressable
+              key={tab.value}
+              onPress={() => setStatusFilter(tab.value)}
+              style={[styles.statusTab, active && styles.statusTabActive]}
+            >
+              <Text style={[styles.statusTabText, active && styles.statusTabTextActive]}>{tab.label}</Text>
+            </Pressable>
+          );
+        })}
+      </View>
+
       <View style={styles.searchRow}>
         <Ionicons name="search" size={17} color={colors.textFaint} style={styles.searchIcon} />
         <TextInput
@@ -371,7 +407,9 @@ export default function InboxListScreen() {
         ListEmptyComponent={
           <View style={styles.center}>
             <Text style={styles.emptyText}>
-              {search || selectedStageId ? 'No matching conversations' : 'No conversations yet.'}
+              {search || selectedStageId || statusFilter !== 'all'
+                ? 'No matching conversations'
+                : 'No conversations yet.'}
             </Text>
           </View>
         }
@@ -458,6 +496,23 @@ function makeStyles(colors: Palette) {
       color: colors.text,
       fontSize: 15,
     },
+    statusTabs: {
+      flexDirection: 'row',
+      gap: spacing.xs,
+      paddingHorizontal: spacing.lg,
+      paddingTop: spacing.md,
+    },
+    statusTab: {
+      paddingHorizontal: spacing.md,
+      paddingVertical: 6,
+      borderRadius: radius.pill,
+      backgroundColor: colors.surfaceRaised,
+    },
+    statusTabActive: { backgroundColor: colors.primary },
+    statusTabText: { color: colors.textMuted, fontSize: 13, fontWeight: '600' },
+    statusTabTextActive: { color: colors.white },
+    closedBadge: { flexDirection: 'row', alignItems: 'center', gap: 3, marginLeft: spacing.xs },
+    closedBadgeText: { color: colors.success, fontSize: 10, fontWeight: '600' },
     filterRow: { paddingBottom: spacing.sm },
     filterChip: {
       paddingHorizontal: spacing.md,

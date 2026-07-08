@@ -262,6 +262,8 @@ export interface Message {
   interactive_reply_id?: string;
   /** Meta's reason for the rejection — only set when status === 'failed'. */
   error_message?: string | null;
+  /** "Delete for me" (mobile) — hides the message from this account's own inbox view only; WhatsApp gives businesses no API to unsend a message from the customer's device. */
+  deleted_at?: string | null;
 }
 
 export type ReactionActor = 'customer' | 'agent';

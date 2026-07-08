@@ -1,5 +1,6 @@
 import { useEffect } from 'react';
-import { Platform } from 'react-native';
+import { BackHandler, Platform } from 'react-native';
+import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { Stack, useRouter, useSegments } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import * as Notifications from 'expo-notifications';
@@ -22,6 +23,27 @@ function RootNavigator() {
       router.replace('/(tabs)');
     }
   }, [user, loading, segments, router]);
+
+  // Explicit safety net for the Android hardware/nav-bar back button.
+  // Expo Router's Stack/Tabs are supposed to pop their own history
+  // automatically, but leaving it fully implicit meant any edge case
+  // in how a screen got pushed (e.g. a route reached via `replace`
+  // somewhere upstream, leaving no history entry) fell through to
+  // Android's OS-level default — exiting the whole app — instead of
+  // just doing nothing or surfacing the gap. This makes the intended
+  // behavior explicit: pop one screen if there's anywhere to pop to,
+  // only let the app exit when there genuinely isn't.
+  useEffect(() => {
+    if (Platform.OS !== 'android') return;
+    const subscription = BackHandler.addEventListener('hardwareBackPress', () => {
+      if (router.canGoBack()) {
+        router.back();
+        return true;
+      }
+      return false;
+    });
+    return () => subscription.remove();
+  }, [router]);
 
   // Tapping a push notification deep-links straight to the
   // conversation it's about — `data.conversationId` is set server-side
@@ -65,11 +87,13 @@ function ThemedStatusBar() {
 
 export default function RootLayout() {
   return (
-    <ThemeProvider>
-      <AuthProvider>
-        <ThemedStatusBar />
-        <RootNavigator />
-      </AuthProvider>
-    </ThemeProvider>
+    <GestureHandlerRootView style={{ flex: 1 }}>
+      <ThemeProvider>
+        <AuthProvider>
+          <ThemedStatusBar />
+          <RootNavigator />
+        </AuthProvider>
+      </ThemeProvider>
+    </GestureHandlerRootView>
   );
 }

@@ -11,6 +11,7 @@ import {
   Platform,
   Modal,
   Linking,
+  PanResponder,
 } from 'react-native';
 import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
@@ -140,19 +141,25 @@ const MessageBubble = memo(function MessageBubble({
   colors,
   styles,
   onPreviewImage,
-  onForward,
+  onSelect,
+  isSelected,
 }: {
   item: Message;
   colors: Palette;
   styles: Styles;
   onPreviewImage: (message: Message) => void;
-  onForward: (message: Message) => void;
+  onSelect: (message: Message) => void;
+  isSelected: boolean;
 }) {
   const isAgent = item.sender_type === 'agent' || item.sender_type === 'bot';
   return (
     <Pressable
-      style={[styles.bubbleRow, isAgent ? styles.bubbleRowAgent : styles.bubbleRowCustomer]}
-      onLongPress={() => onForward(item)}
+      style={[
+        styles.bubbleRow,
+        isAgent ? styles.bubbleRowAgent : styles.bubbleRowCustomer,
+        isSelected && styles.bubbleRowSelected,
+      ]}
+      onLongPress={() => onSelect(item)}
       delayLongPress={350}
     >
       <View style={[styles.bubble, isAgent ? styles.bubbleAgent : styles.bubbleCustomer]}>
@@ -229,6 +236,44 @@ const DateSeparator = memo(function DateSeparator({ label, styles }: { label: st
   );
 });
 
+const RECORDING_BAR_COUNT = 34;
+
+/**
+ * Live amplitude bars while recording — `metering` (dBFS, roughly
+ * -50..0) comes straight from the recorder each poll, so unlike the
+ * played-back waveform (a stable pseudo-pattern — see AudioMessage.tsx)
+ * this one genuinely reflects how loud you're talking in the moment.
+ */
+function RecordingWaveform({ metering, colors }: { metering: number | undefined; colors: Palette }) {
+  const [samples, setSamples] = useState<number[]>([]);
+
+  useEffect(() => {
+    if (metering === undefined) return;
+    const level = Math.min(1, Math.max(0.05, (metering + 50) / 50));
+    setSamples((prev) => {
+      const next = [...prev, level];
+      return next.length > RECORDING_BAR_COUNT ? next.slice(next.length - RECORDING_BAR_COUNT) : next;
+    });
+  }, [metering]);
+
+  return (
+    <View style={{ flex: 1, flexDirection: 'row', alignItems: 'center', height: 28, gap: 2 }}>
+      {samples.map((level, i) => (
+        <View
+          key={i}
+          style={{
+            flex: 1,
+            minWidth: 2,
+            height: `${8 + level * 92}%`,
+            borderRadius: 1,
+            backgroundColor: colors.danger,
+          }}
+        />
+      ))}
+    </View>
+  );
+}
+
 export default function MessageThreadScreen() {
   const params = useLocalSearchParams<{
     id: string;
@@ -263,19 +308,23 @@ export default function MessageThreadScreen() {
   const [forwardTarget, setForwardTarget] = useState<Message | null>(null);
   const [forwardConversations, setForwardConversations] = useState<Conversation[] | null>(null);
   const [forwardSearch, setForwardSearch] = useState('');
-  const [forwardBusyId, setForwardBusyId] = useState<string | null>(null);
+  const [selectedMessage, setSelectedMessage] = useState<Message | null>(null);
+  const [deleteSheetOpen, setDeleteSheetOpen] = useState(false);
   const listRef = useRef<FlatList<ListItem>>(null);
 
   const sendPlayer = useAudioPlayer(sendSound);
   const receivePlayer = useAudioPlayer(receiveSound);
-  const recorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
-  const recorderState = useAudioRecorderState(recorder, 200);
+  const recorder = useAudioRecorder({ ...RecordingPresets.HIGH_QUALITY, isMeteringEnabled: true });
+  const recorderState = useAudioRecorderState(recorder, 100);
+  const [isLocked, setIsLocked] = useState(false);
+  const isLockedRef = useRef(false);
 
   const fetchMessages = useCallback(async () => {
     const { data, error } = await supabase
       .from('messages')
       .select('*')
       .eq('conversation_id', conversationId)
+      .is('deleted_at', null)
       .order('created_at', { ascending: true })
       .limit(100);
 
@@ -513,15 +562,21 @@ export default function MessageThreadScreen() {
       return;
     }
     setSendError(null);
+    isLockedRef.current = false;
+    setIsLocked(false);
     await recorder.prepareToRecordAsync();
     recorder.record();
   }
 
   async function cancelRecording() {
+    isLockedRef.current = false;
+    setIsLocked(false);
     await recorder.stop().catch(() => {});
   }
 
   async function finishRecording() {
+    isLockedRef.current = false;
+    setIsLocked(false);
     await recorder.stop();
     const uri = recorder.uri;
     if (!uri || !accountId) return;
@@ -538,6 +593,38 @@ export default function MessageThreadScreen() {
       setUploading(false);
     }
   }
+
+  // Hold the mic to record, release to send — matches WhatsApp's own
+  // gesture. Slide up while holding to "lock" (keeps recording after
+  // you lift your finger, showing the same manual send/cancel row a
+  // locked recording already had). Slide left before releasing to
+  // cancel outright, same as WhatsApp's cancel gesture. Recreated each
+  // render (cheap) rather than memoized so its closures never go stale
+  // — PanResponder callbacks otherwise capture whichever `accountId`/
+  // `recorder` were current the one time it was created.
+  const micResponder = PanResponder.create({
+    onStartShouldSetPanResponder: () => true,
+    onPanResponderGrant: () => {
+      void startRecording();
+    },
+    onPanResponderMove: (_evt, gestureState) => {
+      if (!isLockedRef.current && gestureState.dy < -60) {
+        isLockedRef.current = true;
+        setIsLocked(true);
+      }
+    },
+    onPanResponderRelease: (_evt, gestureState) => {
+      if (isLockedRef.current) return; // stays recording — user taps send/trash explicitly
+      if (gestureState.dx < -80) {
+        void cancelRecording();
+      } else {
+        void finishRecording();
+      }
+    },
+    onPanResponderTerminate: () => {
+      if (!isLockedRef.current) void cancelRecording();
+    },
+  });
 
   async function handleChangeStage(stage: LifecycleStage | null) {
     if (!contact) return;
@@ -592,9 +679,27 @@ export default function MessageThreadScreen() {
 
   async function handleForwardTo(target: Conversation) {
     if (!forwardTarget || !accountId) return;
-    setForwardBusyId(target.id);
+    const message = forwardTarget;
+    setForwardTarget(null);
+    setForwardSearch('');
+    setSelectedMessage(null);
+
+    // Navigate to the destination chat immediately instead of sitting
+    // on a spinner until the send round-trip finishes — the target
+    // screen's own realtime subscription picks the message up the
+    // moment it lands, same as any other incoming message there.
+    router.push({
+      pathname: '/inbox/[id]',
+      params: {
+        id: target.id,
+        name: target.contact?.name ?? '',
+        phone: target.contact?.phone ?? '',
+        stageName: target.contact?.lifecycle_stage?.name ?? '',
+        stageColor: target.contact?.lifecycle_stage?.color ?? '',
+      },
+    });
+
     try {
-      const message = forwardTarget;
       if (message.content_type === 'text') {
         await apiFetch('/api/whatsapp/send', {
           method: 'POST',
@@ -617,13 +722,18 @@ export default function MessageThreadScreen() {
           }),
         });
       }
-      setForwardTarget(null);
-      setForwardSearch('');
     } catch (err) {
-      setSendError(err instanceof Error ? err.message : 'Failed to forward message');
-    } finally {
-      setForwardBusyId(null);
+      console.error('[Forward] failed:', err);
     }
+  }
+
+  async function handleDeleteForMe() {
+    if (!selectedMessage) return;
+    const messageId = selectedMessage.id;
+    setDeleteSheetOpen(false);
+    setSelectedMessage(null);
+    setMessages((prev) => prev.map((m) => (m.id === messageId ? { ...m, deleted_at: new Date().toISOString() } : m)));
+    await supabase.from('messages').update({ deleted_at: new Date().toISOString() }).eq('id', messageId);
   }
 
   const filteredForwardConversations = useMemo(() => {
@@ -640,10 +750,15 @@ export default function MessageThreadScreen() {
   // Flattens messages + in-flight pending bubbles into one list with
   // WhatsApp-style date separators inserted between day boundaries.
   const listData = useMemo<ListItem[]>(() => {
+    // Excludes anything soft-deleted via "Delete for Me" — the realtime
+    // UPDATE handler above just replaces the row in `messages` as-is
+    // (deleted_at and all), so this is the one place that actually
+    // keeps it out of view.
+    const undeleted = messages.filter((m) => !m.deleted_at);
     const term = searchQuery.trim().toLowerCase();
     const visibleMessages = term
-      ? messages.filter((m) => m.content_text?.toLowerCase().includes(term))
-      : messages;
+      ? undeleted.filter((m) => m.content_text?.toLowerCase().includes(term))
+      : undeleted;
 
     const items: ListItem[] = [];
     let lastDay: string | null = null;
@@ -688,36 +803,68 @@ export default function MessageThreadScreen() {
       keyboardVerticalOffset={90}
     >
       <View style={[styles.customHeader, { paddingTop: insets.top + spacing.sm }]}>
-        <View style={styles.headerTopRow}>
-          <Pressable onPress={() => router.back()} hitSlop={8} style={styles.backButton}>
-            <Ionicons name="chevron-back" size={24} color={colors.text} />
-          </Pressable>
-          <Text style={styles.headerName} numberOfLines={1}>
-            {headerName}
-          </Text>
-          <View style={styles.headerActions}>
-            <Pressable
-              style={styles.headerIconButton}
-              onPress={() => setSearchOpen((v) => !v)}
-              hitSlop={8}
-            >
-              <Ionicons name={searchOpen ? 'close' : 'search'} size={20} color={colors.textSecondary} />
+        {selectedMessage ? (
+          // Tap-and-hold a message to select it — swaps the header for
+          // a WhatsApp-style selection bar instead of jumping straight
+          // to forwarding on a bare tap.
+          <View style={styles.headerTopRow}>
+            <Pressable onPress={() => setSelectedMessage(null)} hitSlop={8} style={styles.backButton}>
+              <Ionicons name="close" size={24} color={colors.text} />
             </Pressable>
-            <Pressable style={styles.headerIconButton} onPress={() => setMenuOpen(true)} hitSlop={8}>
-              <Ionicons name="ellipsis-vertical" size={20} color={colors.textSecondary} />
-            </Pressable>
+            <Text style={styles.headerName} numberOfLines={1}>
+              1 selected
+            </Text>
+            <View style={styles.headerActions}>
+              <Pressable
+                style={styles.headerIconButton}
+                onPress={() => handleForward(selectedMessage)}
+                hitSlop={8}
+              >
+                <Ionicons name="arrow-redo-outline" size={20} color={colors.textSecondary} />
+              </Pressable>
+              <Pressable
+                style={styles.headerIconButton}
+                onPress={() => setDeleteSheetOpen(true)}
+                hitSlop={8}
+              >
+                <Ionicons name="trash-outline" size={20} color={colors.dangerMuted} />
+              </Pressable>
+            </View>
           </View>
-        </View>
-        <Pressable
-          style={styles.stagePill}
-          onPress={() => setStagePickerOpen(true)}
-        >
-          <View style={[styles.stageDot, { backgroundColor: headerStageColor }]} />
-          <Text style={styles.stagePillText} numberOfLines={1}>
-            {headerStageName ?? 'Set stage'}
-          </Text>
-          <Ionicons name="chevron-down" size={12} color={colors.textFaint} />
-        </Pressable>
+        ) : (
+          <>
+            <View style={styles.headerTopRow}>
+              <Pressable onPress={() => router.back()} hitSlop={8} style={styles.backButton}>
+                <Ionicons name="chevron-back" size={24} color={colors.text} />
+              </Pressable>
+              <Text style={styles.headerName} numberOfLines={1}>
+                {headerName}
+              </Text>
+              <View style={styles.headerActions}>
+                <Pressable
+                  style={styles.headerIconButton}
+                  onPress={() => setSearchOpen((v) => !v)}
+                  hitSlop={8}
+                >
+                  <Ionicons name={searchOpen ? 'close' : 'search'} size={20} color={colors.textSecondary} />
+                </Pressable>
+                <Pressable style={styles.headerIconButton} onPress={() => setMenuOpen(true)} hitSlop={8}>
+                  <Ionicons name="ellipsis-vertical" size={20} color={colors.textSecondary} />
+                </Pressable>
+              </View>
+            </View>
+            <Pressable
+              style={styles.stagePill}
+              onPress={() => setStagePickerOpen(true)}
+            >
+              <View style={[styles.stageDot, { backgroundColor: headerStageColor }]} />
+              <Text style={styles.stagePillText} numberOfLines={1}>
+                {headerStageName ?? 'Set stage'}
+              </Text>
+              <Ionicons name="chevron-down" size={12} color={colors.textFaint} />
+            </Pressable>
+          </>
+        )}
       </View>
 
       {searchOpen && (
@@ -776,7 +923,8 @@ export default function MessageThreadScreen() {
                 colors={colors}
                 styles={styles}
                 onPreviewImage={setPreviewMessage}
-                onForward={handleForward}
+                onSelect={setSelectedMessage}
+                isSelected={selectedMessage?.id === item.message.id}
               />
             );
           }}
@@ -801,23 +949,42 @@ export default function MessageThreadScreen() {
 
       {!contact?.blocked_at && (
         <View style={styles.composer}>
-          {isRecording ? (
+          {isRecording && isLocked ? (
+            // Locked — recording continues hands-free; explicit tap
+            // required to send or cancel (same as a locked recording
+            // in WhatsApp).
             <View style={styles.recordingRow}>
               <Pressable onPress={cancelRecording} hitSlop={8} style={styles.recordingCancel}>
                 <Ionicons name="trash-outline" size={20} color={colors.dangerMuted} />
               </Pressable>
-              <View style={styles.recordingIndicator}>
-                <View style={styles.recordingDot} />
-                <Text style={styles.recordingTime}>
-                  {Math.floor(recordSeconds / 60)}:{(recordSeconds % 60).toString().padStart(2, '0')}
-                </Text>
-              </View>
+              <View style={styles.recordingDot} />
+              <Text style={styles.recordingTime}>
+                {Math.floor(recordSeconds / 60)}:{(recordSeconds % 60).toString().padStart(2, '0')}
+              </Text>
+              <RecordingWaveform metering={recorderState.metering} colors={colors} />
               <Pressable
                 style={({ pressed }) => [styles.sendButton, pressed && styles.sendButtonPressed]}
                 onPress={finishRecording}
               >
                 <Ionicons name="send" size={17} color={colors.white} />
               </Pressable>
+            </View>
+          ) : isRecording ? (
+            // Actively held — releasing sends, sliding left cancels,
+            // sliding up locks (handled by micResponder below). The mic
+            // button itself stays in the same place under the finger.
+            <View style={styles.recordingHeldWrap}>
+              <View style={styles.recordingRow}>
+                <View style={styles.recordingDot} />
+                <Text style={styles.recordingTime}>
+                  {Math.floor(recordSeconds / 60)}:{(recordSeconds % 60).toString().padStart(2, '0')}
+                </Text>
+                <RecordingWaveform metering={recorderState.metering} colors={colors} />
+                <View style={[styles.sendButton, styles.micButtonHeld]} {...micResponder.panHandlers}>
+                  <Ionicons name="mic" size={19} color={colors.white} />
+                </View>
+              </View>
+              <Text style={styles.recordingHintText}>◁ slide to cancel · slide up 🔒 to lock</Text>
             </View>
           ) : (
             <>
@@ -844,12 +1011,9 @@ export default function MessageThreadScreen() {
                   <Ionicons name="send" size={17} color={colors.white} />
                 </Pressable>
               ) : (
-                <Pressable
-                  style={({ pressed }) => [styles.sendButton, pressed && styles.sendButtonPressed]}
-                  onPress={startRecording}
-                >
+                <View style={styles.sendButton} {...micResponder.panHandlers}>
                   <Ionicons name="mic" size={19} color={colors.white} />
-                </Pressable>
+                </View>
               )}
             </>
           )}
@@ -1078,24 +1242,43 @@ export default function MessageThreadScreen() {
                 style={{ maxHeight: 360 }}
                 renderItem={({ item }) => {
                   const label = item.contact?.name || item.contact?.phone || 'Unknown';
-                  const busy = forwardBusyId === item.id;
                   return (
-                    <Pressable
-                      style={styles.forwardRow}
-                      onPress={() => handleForwardTo(item)}
-                      disabled={forwardBusyId !== null}
-                    >
+                    <Pressable style={styles.forwardRow} onPress={() => handleForwardTo(item)}>
                       <Avatar label={label} seed={item.contact?.id} size={40} />
                       <Text style={styles.forwardRowText} numberOfLines={1}>
                         {label}
                       </Text>
-                      {busy && <ActivityIndicator size="small" color={colors.accent} />}
                     </Pressable>
                   );
                 }}
               />
             )}
           </Pressable>
+        </Pressable>
+      </Modal>
+
+      {/* Delete confirm — only "Delete for Me" is real. WhatsApp gives
+          businesses no API to unsend a message from the customer's
+          phone, so there's no working "Delete for Everyone" to offer
+          here; showing one that didn't actually do that would be worse
+          than not having it. */}
+      <Modal
+        visible={deleteSheetOpen}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setDeleteSheetOpen(false)}
+      >
+        <Pressable style={styles.modalBackdrop} onPress={() => setDeleteSheetOpen(false)}>
+          <View style={styles.menuCard}>
+            <View style={styles.sheetHandle} />
+            <Pressable style={styles.menuItem} onPress={handleDeleteForMe}>
+              <Ionicons name="trash-outline" size={20} color={colors.dangerMuted} />
+              <Text style={[styles.menuItemText, { color: colors.dangerMuted }]}>Delete for Me</Text>
+            </Pressable>
+            <Text style={styles.deleteNote}>
+              Only removes this from your own inbox. WhatsApp doesn&apos;t let businesses unsend a message from the customer&apos;s phone.
+            </Text>
+          </View>
         </Pressable>
       </Modal>
     </KeyboardAvoidingView>
@@ -1179,6 +1362,7 @@ function makeStyles(colors: Palette) {
     bubbleRow: { flexDirection: 'row' },
     bubbleRowAgent: { justifyContent: 'flex-end' },
     bubbleRowCustomer: { justifyContent: 'flex-start' },
+    bubbleRowSelected: { backgroundColor: colors.primaryMuted },
     bubble: {
       maxWidth: '80%',
       borderRadius: radius.md + 2,
@@ -1244,11 +1428,13 @@ function makeStyles(colors: Palette) {
     },
     sendButtonPressed: { opacity: 0.85 },
     sendButtonDisabled: { opacity: 0.5 },
-    recordingRow: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: spacing.md },
+    recordingRow: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
     recordingCancel: { padding: 4 },
-    recordingIndicator: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
     recordingDot: { width: 10, height: 10, borderRadius: 5, backgroundColor: colors.danger },
     recordingTime: { color: colors.textSecondary, fontSize: 14, fontVariant: ['tabular-nums'] },
+    recordingHeldWrap: { flex: 1, gap: 2 },
+    recordingHintText: { color: colors.textFaint, fontSize: 11, textAlign: 'center' },
+    micButtonHeld: { transform: [{ scale: 1.08 }] },
     mediaImage: { width: 220, height: 220, borderRadius: radius.sm },
     videoCard: {
       flexDirection: 'row',
@@ -1400,5 +1586,6 @@ function makeStyles(colors: Palette) {
       paddingVertical: spacing.sm + 2,
     },
     forwardRowText: { flex: 1, color: colors.text, fontSize: 15, fontWeight: '500' },
+    deleteNote: { color: colors.textFaint, fontSize: 12, lineHeight: 17, marginTop: spacing.sm },
   });
 }

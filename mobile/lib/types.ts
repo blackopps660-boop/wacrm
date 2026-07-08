@@ -94,4 +94,5 @@ export interface Message {
   reply_to_message_id?: string;
   interactive_reply_id?: string;
   error_message?: string | null;
+  deleted_at?: string | null;
 }
