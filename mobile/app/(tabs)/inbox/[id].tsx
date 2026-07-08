@@ -12,7 +12,7 @@ import {
   Modal,
   Linking,
 } from 'react-native';
-import { useLocalSearchParams, useRouter } from 'expo-router';
+import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useAudioPlayer, useAudioRecorder, useAudioRecorderState, RecordingPresets, requestRecordingPermissionsAsync } from 'expo-audio';
 import * as ImagePicker from 'expo-image-picker';
@@ -25,7 +25,10 @@ import { useAppTheme } from '../../../hooks/use-theme';
 import { loadLifecycleStages } from '../../../lib/contacts/queries';
 import { AudioMessage } from '../../../components/AudioMessage';
 import { AuthedImage } from '../../../components/AuthedImage';
+import { Avatar } from '../../../components/Avatar';
+import { setActiveConversationId } from '../../../lib/active-conversation';
 import {
+  ensureForwardableMediaUrl,
   MEDIA_MAX_BYTES_BY_KIND,
   resolveOpenableUrl,
   uploadDirectMedia,
@@ -33,7 +36,7 @@ import {
   type PickedFile,
 } from '../../../lib/media';
 import { radius, scaleFontSizes, spacing, type Palette } from '../../../lib/theme';
-import type { Message, Contact, LifecycleStage } from '../../../lib/types';
+import type { Message, Contact, Conversation, LifecycleStage } from '../../../lib/types';
 
 const sendSound = require('../../../assets/sounds/send.wav');
 const receiveSound = require('../../../assets/sounds/receive.wav');
@@ -81,13 +84,25 @@ async function openMediaUrl(url: string) {
   if (opened) Linking.openURL(opened).catch(() => {});
 }
 
-function MessageContent({ item, isAgent, styles, colors }: { item: Message; isAgent: boolean; styles: Styles; colors: Palette }) {
+function MessageContent({
+  item,
+  isAgent,
+  styles,
+  colors,
+  onPreviewImage,
+}: {
+  item: Message;
+  isAgent: boolean;
+  styles: Styles;
+  colors: Palette;
+  onPreviewImage: (message: Message) => void;
+}) {
   if (item.content_type === 'audio' && item.media_url) {
     return <AudioMessage url={item.media_url} tint={isAgent ? 'agent' : 'customer'} />;
   }
   if (item.content_type === 'image' && item.media_url) {
     return (
-      <Pressable onPress={() => openMediaUrl(item.media_url!)}>
+      <Pressable onPress={() => onPreviewImage(item)}>
         <AuthedImage url={item.media_url} style={styles.mediaImage} />
       </Pressable>
     );
@@ -124,16 +139,24 @@ const MessageBubble = memo(function MessageBubble({
   item,
   colors,
   styles,
+  onPreviewImage,
+  onForward,
 }: {
   item: Message;
   colors: Palette;
   styles: Styles;
+  onPreviewImage: (message: Message) => void;
+  onForward: (message: Message) => void;
 }) {
   const isAgent = item.sender_type === 'agent' || item.sender_type === 'bot';
   return (
-    <View style={[styles.bubbleRow, isAgent ? styles.bubbleRowAgent : styles.bubbleRowCustomer]}>
+    <Pressable
+      style={[styles.bubbleRow, isAgent ? styles.bubbleRowAgent : styles.bubbleRowCustomer]}
+      onLongPress={() => onForward(item)}
+      delayLongPress={350}
+    >
       <View style={[styles.bubble, isAgent ? styles.bubbleAgent : styles.bubbleCustomer]}>
-        <MessageContent item={item} isAgent={isAgent} styles={styles} colors={colors} />
+        <MessageContent item={item} isAgent={isAgent} styles={styles} colors={colors} onPreviewImage={onPreviewImage} />
         <View style={styles.bubbleFooter}>
           <Text style={isAgent ? styles.bubbleTimeAgent : styles.bubbleTimeCustomer}>
             {new Date(item.created_at).toLocaleTimeString(undefined, {
@@ -168,7 +191,7 @@ const MessageBubble = memo(function MessageBubble({
           <Text style={styles.failedText}>Failed{item.error_message ? `: ${item.error_message}` : ''}</Text>
         )}
       </View>
-    </View>
+    </Pressable>
   );
 });
 
@@ -236,6 +259,11 @@ export default function MessageThreadScreen() {
   const [uploading, setUploading] = useState(false);
   const [mediaViewerOpen, setMediaViewerOpen] = useState(false);
   const [sharedMedia, setSharedMedia] = useState<Message[] | null>(null);
+  const [previewMessage, setPreviewMessage] = useState<Message | null>(null);
+  const [forwardTarget, setForwardTarget] = useState<Message | null>(null);
+  const [forwardConversations, setForwardConversations] = useState<Conversation[] | null>(null);
+  const [forwardSearch, setForwardSearch] = useState('');
+  const [forwardBusyId, setForwardBusyId] = useState<string | null>(null);
   const listRef = useRef<FlatList<ListItem>>(null);
 
   const sendPlayer = useAudioPlayer(sendSound);
@@ -285,6 +313,19 @@ export default function MessageThreadScreen() {
     void fetchContact();
     loadLifecycleStages(supabase).then(setStages).catch(console.error);
   }, [fetchMessages, fetchContact]);
+
+  // Marks this conversation as "the one on screen" only while it's the
+  // focused route — tab screens stay mounted in the background in this
+  // app, so mount/unmount alone would leave a stale thread marked
+  // active after navigating away within the same tab. The push
+  // notification handler (lib/push-notifications.ts) checks this to
+  // skip the banner for a message in the chat you're already viewing.
+  useFocusEffect(
+    useCallback(() => {
+      setActiveConversationId(conversationId);
+      return () => setActiveConversationId(null);
+    }, [conversationId]),
+  );
 
   useRealtime({
     channelName: `mobile-thread-${conversationId}`,
@@ -537,6 +578,65 @@ export default function MessageThreadScreen() {
     setSharedMedia((data as Message[]) ?? []);
   }
 
+  function handleForward(message: Message) {
+    setForwardTarget(message);
+    if (forwardConversations === null) {
+      supabase
+        .from('conversations')
+        .select('*, contact:contacts(*)')
+        .order('last_message_at', { ascending: false })
+        .limit(50)
+        .then(({ data }) => setForwardConversations((data as unknown as Conversation[]) ?? []));
+    }
+  }
+
+  async function handleForwardTo(target: Conversation) {
+    if (!forwardTarget || !accountId) return;
+    setForwardBusyId(target.id);
+    try {
+      const message = forwardTarget;
+      if (message.content_type === 'text') {
+        await apiFetch('/api/whatsapp/send', {
+          method: 'POST',
+          body: JSON.stringify({
+            conversation_id: target.id,
+            message_type: 'text',
+            content_text: message.content_text,
+          }),
+        });
+      } else if (message.media_url) {
+        const publicUrl = await ensureForwardableMediaUrl(message.media_url, accountId);
+        await apiFetch('/api/whatsapp/send', {
+          method: 'POST',
+          body: JSON.stringify({
+            conversation_id: target.id,
+            message_type: message.content_type,
+            media_url: publicUrl,
+            content_text: message.content_type === 'document' ? message.content_text : undefined,
+            filename: message.content_type === 'document' ? message.content_text : undefined,
+          }),
+        });
+      }
+      setForwardTarget(null);
+      setForwardSearch('');
+    } catch (err) {
+      setSendError(err instanceof Error ? err.message : 'Failed to forward message');
+    } finally {
+      setForwardBusyId(null);
+    }
+  }
+
+  const filteredForwardConversations = useMemo(() => {
+    if (!forwardConversations) return [];
+    const term = forwardSearch.trim().toLowerCase();
+    if (!term) return forwardConversations;
+    return forwardConversations.filter((c) => {
+      const name = c.contact?.name?.toLowerCase() ?? '';
+      const phone = c.contact?.phone?.toLowerCase() ?? '';
+      return name.includes(term) || phone.includes(term);
+    });
+  }, [forwardConversations, forwardSearch]);
+
   // Flattens messages + in-flight pending bubbles into one list with
   // WhatsApp-style date separators inserted between day boundaries.
   const listData = useMemo<ListItem[]>(() => {
@@ -670,7 +770,15 @@ export default function MessageThreadScreen() {
                 </Pressable>
               );
             }
-            return <MessageBubble item={item.message} colors={colors} styles={styles} />;
+            return (
+              <MessageBubble
+                item={item.message}
+                colors={colors}
+                styles={styles}
+                onPreviewImage={setPreviewMessage}
+                onForward={handleForward}
+              />
+            );
           }}
           ListEmptyComponent={
             isSearching ? (
@@ -752,6 +860,7 @@ export default function MessageThreadScreen() {
       <Modal visible={attachOpen} transparent animationType="fade" onRequestClose={() => setAttachOpen(false)}>
         <Pressable style={styles.modalBackdrop} onPress={() => setAttachOpen(false)}>
           <View style={styles.menuCard}>
+            <View style={styles.sheetHandle} />
             <Pressable style={styles.menuItem} onPress={handlePickImageOrVideo}>
               <Ionicons name="image-outline" size={20} color={colors.textSecondary} />
               <Text style={styles.menuItemText}>Photo or Video</Text>
@@ -768,6 +877,7 @@ export default function MessageThreadScreen() {
       <Modal visible={menuOpen} transparent animationType="fade" onRequestClose={() => setMenuOpen(false)}>
         <Pressable style={styles.modalBackdrop} onPress={() => setMenuOpen(false)}>
           <View style={styles.menuCard}>
+            <View style={styles.sheetHandle} />
             <Pressable
               style={styles.menuItem}
               onPress={() => {
@@ -817,6 +927,7 @@ export default function MessageThreadScreen() {
       >
         <Pressable style={styles.modalBackdrop} onPress={() => setStagePickerOpen(false)}>
           <View style={styles.menuCard}>
+            <View style={styles.sheetHandle} />
             <Text style={styles.menuTitle}>Lifecycle Stage</Text>
             <Pressable style={styles.menuItem} onPress={() => handleChangeStage(null)}>
               <View style={[styles.stageDot, { backgroundColor: colors.borderStrong }]} />
@@ -841,10 +952,11 @@ export default function MessageThreadScreen() {
       >
         <Pressable style={styles.modalBackdrop} onPress={() => setMediaViewerOpen(false)}>
           <Pressable style={styles.mediaViewerCard} onPress={(e) => e.stopPropagation()}>
-            <View style={styles.mediaViewerHeader}>
-              <Text style={styles.menuTitle}>Media, Links and Docs</Text>
-              <Pressable onPress={() => setMediaViewerOpen(false)} hitSlop={8}>
-                <Ionicons name="close" size={22} color={colors.textSecondary} />
+            <View style={styles.sheetHandle} />
+            <View style={styles.sheetHeaderRow}>
+              <Text style={styles.sheetHeaderTitle}>Media, Links and Docs</Text>
+              <Pressable style={styles.previewIconButtonDark} onPress={() => setMediaViewerOpen(false)} hitSlop={8}>
+                <Ionicons name="close" size={20} color={colors.textSecondary} />
               </Pressable>
             </View>
             {sharedMedia === null ? (
@@ -859,7 +971,18 @@ export default function MessageThreadScreen() {
                 columnWrapperStyle={{ gap: spacing.xs }}
                 contentContainerStyle={{ gap: spacing.xs, paddingBottom: spacing.xl }}
                 renderItem={({ item }) => (
-                  <Pressable style={styles.mediaGridItem} onPress={() => item.media_url && openMediaUrl(item.media_url)}>
+                  <Pressable
+                    style={styles.mediaGridItem}
+                    onPress={() => {
+                      if (!item.media_url) return;
+                      if (item.content_type === 'image') {
+                        setMediaViewerOpen(false);
+                        setPreviewMessage(item);
+                      } else {
+                        openMediaUrl(item.media_url);
+                      }
+                    }}
+                  >
                     {item.content_type === 'image' && item.media_url ? (
                       <AuthedImage url={item.media_url} style={styles.mediaGridImage} />
                     ) : (
@@ -878,6 +1001,98 @@ export default function MessageThreadScreen() {
                     )}
                   </Pressable>
                 )}
+              />
+            )}
+          </Pressable>
+        </Pressable>
+      </Modal>
+
+      {/* Full-screen image preview */}
+      <Modal
+        visible={!!previewMessage}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setPreviewMessage(null)}
+      >
+        <View style={styles.previewContainer}>
+          <View style={[styles.previewHeader, { paddingTop: insets.top + spacing.sm }]}>
+            <Pressable
+              style={styles.previewIconButton}
+              onPress={() => setPreviewMessage(null)}
+              hitSlop={8}
+            >
+              <Ionicons name="close" size={24} color="#fff" />
+            </Pressable>
+            <Pressable
+              style={styles.previewIconButton}
+              onPress={() => {
+                const message = previewMessage;
+                setPreviewMessage(null);
+                if (message) handleForward(message);
+              }}
+              hitSlop={8}
+            >
+              <Ionicons name="arrow-redo-outline" size={22} color="#fff" />
+            </Pressable>
+          </View>
+          {previewMessage?.media_url && (
+            <AuthedImage url={previewMessage.media_url} style={styles.previewImage} resizeMode="contain" />
+          )}
+        </View>
+      </Modal>
+
+      {/* Forward picker */}
+      <Modal
+        visible={!!forwardTarget}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setForwardTarget(null)}
+      >
+        <Pressable style={styles.modalBackdrop} onPress={() => setForwardTarget(null)}>
+          <Pressable style={styles.forwardCard} onPress={(e) => e.stopPropagation()}>
+            <View style={styles.sheetHandle} />
+            <View style={styles.sheetHeaderRow}>
+              <Text style={styles.sheetHeaderTitle}>Forward to</Text>
+              <Pressable style={styles.previewIconButtonDark} onPress={() => setForwardTarget(null)} hitSlop={8}>
+                <Ionicons name="close" size={20} color={colors.textSecondary} />
+              </Pressable>
+            </View>
+            <View style={styles.forwardSearchRow}>
+              <Ionicons name="search" size={16} color={colors.textFaint} style={{ marginRight: spacing.sm }} />
+              <TextInput
+                style={styles.forwardSearchInput}
+                placeholder="Search chats…"
+                placeholderTextColor={colors.textFaint}
+                value={forwardSearch}
+                onChangeText={setForwardSearch}
+              />
+            </View>
+            {forwardConversations === null ? (
+              <ActivityIndicator color={colors.accent} style={{ marginVertical: spacing.xl }} />
+            ) : filteredForwardConversations.length === 0 ? (
+              <Text style={styles.emptyText}>No matching chats</Text>
+            ) : (
+              <FlatList
+                data={filteredForwardConversations}
+                keyExtractor={(item) => item.id}
+                style={{ maxHeight: 360 }}
+                renderItem={({ item }) => {
+                  const label = item.contact?.name || item.contact?.phone || 'Unknown';
+                  const busy = forwardBusyId === item.id;
+                  return (
+                    <Pressable
+                      style={styles.forwardRow}
+                      onPress={() => handleForwardTo(item)}
+                      disabled={forwardBusyId !== null}
+                    >
+                      <Avatar label={label} seed={item.contact?.id} size={40} />
+                      <Text style={styles.forwardRowText} numberOfLines={1}>
+                        {label}
+                      </Text>
+                      {busy && <ActivityIndicator size="small" color={colors.accent} />}
+                    </Pressable>
+                  );
+                }}
               />
             )}
           </Pressable>
@@ -1055,14 +1270,34 @@ function makeStyles(colors: Palette) {
     },
     menuCard: {
       backgroundColor: colors.surface,
-      borderTopLeftRadius: radius.lg,
-      borderTopRightRadius: radius.lg,
+      borderTopLeftRadius: radius.lg + 8,
+      borderTopRightRadius: radius.lg + 8,
       paddingVertical: spacing.md,
       paddingHorizontal: spacing.lg,
       paddingBottom: spacing.xl,
       gap: 4,
       maxHeight: '70%',
+      shadowColor: '#000',
+      shadowOpacity: 0.2,
+      shadowRadius: 12,
+      shadowOffset: { width: 0, height: -2 },
+      elevation: 8,
     },
+    sheetHandle: {
+      alignSelf: 'center',
+      width: 36,
+      height: 4,
+      borderRadius: 2,
+      backgroundColor: colors.borderStrong,
+      marginBottom: spacing.sm,
+    },
+    sheetHeaderRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      marginBottom: spacing.md,
+    },
+    sheetHeaderTitle: { color: colors.text, fontSize: 18, fontWeight: '700' },
     menuTitle: {
       color: colors.textFaint,
       fontSize: 12,
@@ -1083,18 +1318,17 @@ function makeStyles(colors: Palette) {
     stageDot: { width: 8, height: 8, borderRadius: 4 },
     mediaViewerCard: {
       backgroundColor: colors.surface,
-      borderTopLeftRadius: radius.lg,
-      borderTopRightRadius: radius.lg,
+      borderTopLeftRadius: radius.lg + 8,
+      borderTopRightRadius: radius.lg + 8,
       paddingVertical: spacing.md,
       paddingHorizontal: spacing.lg,
       paddingBottom: spacing.xl,
       maxHeight: '75%',
-    },
-    mediaViewerHeader: {
-      flexDirection: 'row',
-      alignItems: 'center',
-      justifyContent: 'space-between',
-      marginBottom: spacing.sm,
+      shadowColor: '#000',
+      shadowOpacity: 0.2,
+      shadowRadius: 12,
+      shadowOffset: { width: 0, height: -2 },
+      elevation: 8,
     },
     mediaGridItem: {
       flex: 1 / 3,
@@ -1112,5 +1346,59 @@ function makeStyles(colors: Palette) {
       gap: 4,
     },
     mediaGridLabel: { color: colors.textFaint, fontSize: 10, textAlign: 'center' },
+    previewContainer: { flex: 1, backgroundColor: '#000' },
+    previewHeader: {
+      flexDirection: 'row',
+      justifyContent: 'space-between',
+      paddingHorizontal: spacing.lg,
+      paddingBottom: spacing.md,
+    },
+    previewIconButton: {
+      width: 40,
+      height: 40,
+      borderRadius: 20,
+      alignItems: 'center',
+      justifyContent: 'center',
+      backgroundColor: 'rgba(255,255,255,0.15)',
+    },
+    previewIconButtonDark: {
+      width: 34,
+      height: 34,
+      borderRadius: 17,
+      alignItems: 'center',
+      justifyContent: 'center',
+      backgroundColor: colors.surfaceRaised,
+    },
+    previewImage: { flex: 1, width: '100%' },
+    forwardCard: {
+      backgroundColor: colors.surface,
+      borderTopLeftRadius: radius.lg + 8,
+      borderTopRightRadius: radius.lg + 8,
+      paddingVertical: spacing.md,
+      paddingHorizontal: spacing.lg,
+      paddingBottom: spacing.xl,
+      maxHeight: '75%',
+      shadowColor: '#000',
+      shadowOpacity: 0.2,
+      shadowRadius: 12,
+      shadowOffset: { width: 0, height: -2 },
+      elevation: 8,
+    },
+    forwardSearchRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      backgroundColor: colors.surfaceRaised,
+      borderRadius: radius.pill,
+      paddingHorizontal: spacing.md,
+      marginBottom: spacing.sm,
+    },
+    forwardSearchInput: { flex: 1, color: colors.text, fontSize: 14, paddingVertical: spacing.sm + 2 },
+    forwardRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: spacing.md,
+      paddingVertical: spacing.sm + 2,
+    },
+    forwardRowText: { flex: 1, color: colors.text, fontSize: 15, fontWeight: '500' },
   });
 }

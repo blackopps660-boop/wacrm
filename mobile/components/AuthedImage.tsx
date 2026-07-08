@@ -3,7 +3,15 @@ import { View, Image, ActivityIndicator, StyleSheet, type ImageStyle, type Style
 import { resolveAuthedSource, type AuthedSource } from '../lib/media';
 
 /** <Image> that attaches the caller's session token when the url is a relative, auth-gated proxy path (inbound media) — see lib/media.ts for why that's necessary. */
-export function AuthedImage({ url, style }: { url: string; style?: StyleProp<ImageStyle> }) {
+export function AuthedImage({
+  url,
+  style,
+  resizeMode = 'cover',
+}: {
+  url: string;
+  style?: StyleProp<ImageStyle>;
+  resizeMode?: 'cover' | 'contain';
+}) {
   const [source, setSource] = useState<AuthedSource | null>(null);
 
   useEffect(() => {
@@ -24,7 +32,7 @@ export function AuthedImage({ url, style }: { url: string; style?: StyleProp<Ima
     );
   }
 
-  return <Image source={source} style={style} resizeMode="cover" />;
+  return <Image source={source} style={style} resizeMode={resizeMode} />;
 }
 
 const styles = StyleSheet.create({

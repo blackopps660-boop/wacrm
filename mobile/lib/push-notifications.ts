@@ -3,18 +3,27 @@ import * as Device from 'expo-device';
 import * as Notifications from 'expo-notifications';
 import Constants from 'expo-constants';
 import { apiFetch } from './supabase';
+import { getActiveConversationId } from './active-conversation';
 
 // Foreground display behavior — the inbox already updates live via
-// Supabase Realtime while the app is open, but still surface the
-// system notification banner (it's cheap, and matches how WhatsApp
-// itself behaves) rather than suppressing it.
+// Supabase Realtime while the app is open, so a banner is generally
+// still useful (matches how WhatsApp behaves for any *other* chat).
+// The one exception is the exact conversation the user is currently
+// looking at (screen focused) — WhatsApp doesn't bank a notification
+// for a chat you're already inside, since the message is already
+// visible and the in-app receive sound already played.
 Notifications.setNotificationHandler({
-  handleNotification: async () => ({
-    shouldShowBanner: true,
-    shouldShowList: true,
-    shouldPlaySound: true,
-    shouldSetBadge: false,
-  }),
+  handleNotification: async (notification) => {
+    const conversationId = notification.request.content.data?.conversationId;
+    const isViewingThisChat =
+      typeof conversationId === 'string' && conversationId === getActiveConversationId();
+    return {
+      shouldShowBanner: !isViewingThisChat,
+      shouldShowList: !isViewingThisChat,
+      shouldPlaySound: !isViewingThisChat,
+      shouldSetBadge: false,
+    };
+  },
 });
 
 /**

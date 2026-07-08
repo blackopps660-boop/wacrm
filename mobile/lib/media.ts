@@ -1,3 +1,4 @@
+import { File } from 'expo-file-system';
 import { supabase, apiFetch, API_BASE_URL } from './supabase';
 
 // Media plumbing shared by the chat composer (send) and message bubbles
@@ -105,13 +106,22 @@ export async function uploadImageOrVideo(
   return { publicUrl: body.publicUrl, path: body.path };
 }
 
-/** Documents + voice notes — straight to Storage, same as the web composer's uploadAccountMedia (nothing to compress server-side). */
+/**
+ * Documents + voice notes — straight to Storage, same as the web
+ * composer's uploadAccountMedia (nothing to compress server-side).
+ *
+ * Reads the local file via expo-file-system's `File.arrayBuffer()`
+ * rather than `fetch(uri).then(r => r.blob())` — React Native's Blob
+ * from a fetched local file is notoriously unreliable for binary
+ * uploads (silently truncated/empty bodies), which is what was behind
+ * "network request failed" on voice note sends. A real ArrayBuffer
+ * read straight off disk doesn't have that problem.
+ */
 export async function uploadDirectMedia(file: PickedFile, accountId: string): Promise<UploadResult> {
-  const response = await fetch(file.uri);
-  const blob = await response.blob();
+  const arrayBuffer = await new File(file.uri).arrayBuffer();
   const path = buildMediaPath(accountId, file.name);
 
-  const { error } = await supabase.storage.from(CHAT_MEDIA_BUCKET).upload(path, blob, {
+  const { error } = await supabase.storage.from(CHAT_MEDIA_BUCKET).upload(path, arrayBuffer, {
     cacheControl: '3600',
     upsert: false,
     contentType: file.mimeType,
@@ -122,4 +132,37 @@ export async function uploadDirectMedia(file: PickedFile, accountId: string): Pr
     data: { publicUrl },
   } = supabase.storage.from(CHAT_MEDIA_BUCKET).getPublicUrl(path);
   return { publicUrl, path };
+}
+
+/**
+ * Makes any message's media forwardable. Outbound (agent-sent) media is
+ * already a public `chat-media` URL — Meta can fetch it directly, so it
+ * passes through untouched. Inbound (customer-sent) media is a relative,
+ * auth-gated proxy path; Meta has no session to fetch it with, so it has
+ * to be downloaded (as this account) and re-hosted publicly first,
+ * exactly like re-uploading a file you received.
+ */
+export async function ensureForwardableMediaUrl(url: string, accountId: string): Promise<string> {
+  if (url.startsWith('http') && !url.startsWith(API_BASE_URL)) return url;
+
+  const source = await resolveAuthedSource(url);
+  if (!source) throw new Error('Not signed in.');
+  const response = await fetch(source.uri, { headers: source.headers });
+  if (!response.ok) throw new Error('Failed to fetch the original media to forward it.');
+  const arrayBuffer = await response.arrayBuffer();
+  const mimeType = response.headers.get('content-type') || 'application/octet-stream';
+  const ext = mimeType.split('/')[1]?.split(';')[0] || 'bin';
+  const path = buildMediaPath(accountId, `forward-${Date.now()}.${ext}`);
+
+  const { error } = await supabase.storage.from(CHAT_MEDIA_BUCKET).upload(path, arrayBuffer, {
+    cacheControl: '3600',
+    upsert: false,
+    contentType: mimeType,
+  });
+  if (error) throw new Error(error.message);
+
+  const {
+    data: { publicUrl },
+  } = supabase.storage.from(CHAT_MEDIA_BUCKET).getPublicUrl(path);
+  return publicUrl;
 }
