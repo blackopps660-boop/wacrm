@@ -93,15 +93,18 @@ export function AudioMessage({ url, tint }: { url: string; tint: 'agent' | 'cust
   const status = useAudioPlayerStatus(player);
   const { colors } = useAppTheme();
 
-  // Release the player when this bubble unmounts (e.g. scrolled far
-  // enough out of the virtualized list) so playback doesn't keep
-  // running in the background.
-  useEffect(() => {
-    return () => {
-      player.pause();
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  // NOTE: no manual pause-on-unmount here. `useAudioPlayer` already
+  // releases its native player automatically on unmount via
+  // useReleasingSharedObject — a previous version of this component
+  // added an extra `player.pause()` cleanup with an empty dependency
+  // array, which meant it closed over the *first* player instance
+  // (created while `source` was still null) rather than whatever
+  // player was actually current. Once the real source resolved, a new
+  // native player replaced it, and the stale cleanup ended up calling
+  // `.pause()` on an already-superseded (possibly already-released)
+  // object on unmount — a plausible source of a native crash when
+  // navigating away from a chat with audio messages, which is exactly
+  // when this fires for every visible AudioMessage at once.
 
   function toggle() {
     if (status.playing) {

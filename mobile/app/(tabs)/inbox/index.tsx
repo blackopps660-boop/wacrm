@@ -101,7 +101,7 @@ const ConversationRow = memo(function ConversationRow({
       onLongPress={() => onLongPress(item)}
       delayLongPress={350}
     >
-      <Avatar label={label} seed={item.contact?.id} size={48} />
+      <Avatar label={label} seed={item.contact?.id} size={48} showChannelBadge />
       <View style={styles.rowContent}>
         <View style={styles.rowTop}>
           <View style={styles.nameRow}>

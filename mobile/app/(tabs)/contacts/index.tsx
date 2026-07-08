@@ -41,7 +41,7 @@ const ContactRow = memo(function ContactRow({
       style={({ pressed }) => [styles.row, pressed && styles.rowPressed]}
       onPress={() => onPress(item.id)}
     >
-      <Avatar label={item.name || item.phone} size={44} />
+      <Avatar label={item.name || item.phone} size={44} showChannelBadge />
       <View style={styles.rowContent}>
         <Text style={styles.name} numberOfLines={1}>
           {item.name || item.phone}

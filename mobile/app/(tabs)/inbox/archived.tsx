@@ -85,7 +85,7 @@ export default function ArchivedScreen() {
               onLongPress={() => setActionTarget(item)}
               delayLongPress={350}
             >
-              <Avatar label={label} seed={item.contact?.id} size={48} />
+              <Avatar label={label} seed={item.contact?.id} size={48} showChannelBadge />
               <View style={styles.rowContent}>
                 <Text style={styles.name} numberOfLines={1}>
                   {label}

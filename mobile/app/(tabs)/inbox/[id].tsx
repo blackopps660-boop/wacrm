@@ -37,7 +37,13 @@ import {
   type PickedFile,
 } from '../../../lib/media';
 import { radius, scaleFontSizes, spacing, type Palette } from '../../../lib/theme';
-import type { Message, Contact, Conversation, LifecycleStage } from '../../../lib/types';
+import type { Message, Contact, Conversation, ConversationOwnerKind, LifecycleStage } from '../../../lib/types';
+
+interface TeamMember {
+  user_id: string;
+  full_name: string;
+  email: string | null;
+}
 
 const sendSound = require('../../../assets/sounds/send.wav');
 const receiveSound = require('../../../assets/sounds/receive.wav');
@@ -310,6 +316,10 @@ export default function MessageThreadScreen() {
   const [forwardSearch, setForwardSearch] = useState('');
   const [selectedMessage, setSelectedMessage] = useState<Message | null>(null);
   const [deleteSheetOpen, setDeleteSheetOpen] = useState(false);
+  const [assignedAgentId, setAssignedAgentId] = useState<string | null>(null);
+  const [ownerKind, setOwnerKind] = useState<ConversationOwnerKind>('unassigned');
+  const [teamMembers, setTeamMembers] = useState<TeamMember[] | null>(null);
+  const [assignPickerOpen, setAssignPickerOpen] = useState(false);
   const listRef = useRef<FlatList<ListItem>>(null);
 
   const sendPlayer = useAudioPlayer(sendSound);
@@ -318,6 +328,26 @@ export default function MessageThreadScreen() {
   const recorderState = useAudioRecorderState(recorder, 100);
   const [isLocked, setIsLocked] = useState(false);
   const isLockedRef = useRef(false);
+  const isRecordingRef = useRef(false);
+  useEffect(() => {
+    isRecordingRef.current = recorderState.isRecording;
+  }, [recorderState.isRecording]);
+
+  // Navigating away (either back button) mid-recording — e.g. holding
+  // the mic, then pressing back before releasing — otherwise leaves an
+  // active native recording session running under a player whose
+  // automatic unmount-release was never designed to interrupt an
+  // in-progress recording safely. Stopping it explicitly first, before
+  // the screen (and the recorder with it) unmounts, avoids tearing
+  // down a live recording out from under itself.
+  useEffect(() => {
+    return () => {
+      if (isRecordingRef.current) {
+        recorder.stop().catch(() => {});
+      }
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const fetchMessages = useCallback(async () => {
     const { data, error } = await supabase
@@ -342,12 +372,14 @@ export default function MessageThreadScreen() {
   const fetchContact = useCallback(async () => {
     const { data: conv } = await supabase
       .from('conversations')
-      .select('unread_count, contact:contacts(*)')
+      .select('unread_count, assigned_agent_id, owner_kind, contact:contacts(*)')
       .eq('id', conversationId)
       .maybeSingle();
 
     const contactRow = conv?.contact as unknown as Contact | null;
     setContact(contactRow);
+    setAssignedAgentId((conv?.assigned_agent_id as string | null) ?? null);
+    setOwnerKind((conv?.owner_kind as ConversationOwnerKind) ?? 'unassigned');
 
     if (conv && conv.unread_count > 0) {
       await supabase.from('conversations').update({ unread_count: 0 }).eq('id', conversationId);
@@ -638,6 +670,27 @@ export default function MessageThreadScreen() {
     }
   }
 
+  function handleOpenAssignPicker() {
+    setAssignPickerOpen(true);
+    if (teamMembers === null) {
+      apiFetch('/api/account/members', { method: 'GET' })
+        .then((res) => res.json())
+        .then((body) => setTeamMembers(body.members ?? []))
+        .catch(() => setTeamMembers([]));
+    }
+  }
+
+  async function handleAssign(agentId: string | null) {
+    setAssignPickerOpen(false);
+    const nextOwnerKind: ConversationOwnerKind = agentId ? 'human' : 'unassigned';
+    setAssignedAgentId(agentId);
+    setOwnerKind(nextOwnerKind);
+    await supabase
+      .from('conversations')
+      .update({ owner_kind: nextOwnerKind, assigned_agent_id: agentId })
+      .eq('id', conversationId);
+  }
+
   async function handleToggleBlock() {
     if (!contact) return;
     setMenuOpen(false);
@@ -786,6 +839,9 @@ export default function MessageThreadScreen() {
   const headerName = contact ? contact.name || contact.phone || 'Conversation' : params.name || params.phone || 'Conversation';
   const headerStageName = contact ? contact.lifecycle_stage?.name ?? null : params.stageName || null;
   const headerStageColor = contact ? contact.lifecycle_stage?.color ?? colors.borderStrong : params.stageColor || colors.borderStrong;
+  const assignedMember = teamMembers?.find((m) => m.user_id === assignedAgentId);
+  const assignLabel =
+    ownerKind === 'ai' ? 'AI Agent' : assignedAgentId ? (assignedMember?.full_name ?? 'Assigned') : 'Unassigned';
   const isRecording = recorderState.isRecording;
   const recordSeconds = Math.floor((recorderState.durationMillis ?? 0) / 1000);
 
@@ -853,16 +909,25 @@ export default function MessageThreadScreen() {
                 </Pressable>
               </View>
             </View>
-            <Pressable
-              style={styles.stagePill}
-              onPress={() => setStagePickerOpen(true)}
-            >
-              <View style={[styles.stageDot, { backgroundColor: headerStageColor }]} />
-              <Text style={styles.stagePillText} numberOfLines={1}>
-                {headerStageName ?? 'Set stage'}
-              </Text>
-              <Ionicons name="chevron-down" size={12} color={colors.textFaint} />
-            </Pressable>
+            <View style={styles.pillRow}>
+              <Pressable
+                style={styles.stagePill}
+                onPress={() => setStagePickerOpen(true)}
+              >
+                <View style={[styles.stageDot, { backgroundColor: headerStageColor }]} />
+                <Text style={styles.stagePillText} numberOfLines={1}>
+                  {headerStageName ?? 'Set stage'}
+                </Text>
+                <Ionicons name="chevron-down" size={12} color={colors.textFaint} />
+              </Pressable>
+              <Pressable style={styles.stagePill} onPress={handleOpenAssignPicker}>
+                <Ionicons name="person-circle-outline" size={13} color={colors.textFaint} />
+                <Text style={styles.stagePillText} numberOfLines={1}>
+                  {assignLabel}
+                </Text>
+                <Ionicons name="chevron-down" size={12} color={colors.textFaint} />
+              </Pressable>
+            </View>
           </>
         )}
       </View>
@@ -1107,6 +1172,35 @@ export default function MessageThreadScreen() {
         </Pressable>
       </Modal>
 
+      {/* Assignee picker */}
+      <Modal
+        visible={assignPickerOpen}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setAssignPickerOpen(false)}
+      >
+        <Pressable style={styles.modalBackdrop} onPress={() => setAssignPickerOpen(false)}>
+          <View style={styles.menuCard}>
+            <View style={styles.sheetHandle} />
+            <Text style={styles.menuTitle}>Assign To</Text>
+            <Pressable style={styles.menuItem} onPress={() => handleAssign(null)}>
+              <Ionicons name="person-circle-outline" size={20} color={colors.textFaint} />
+              <Text style={styles.menuItemText}>Unassigned</Text>
+            </Pressable>
+            {teamMembers === null ? (
+              <ActivityIndicator color={colors.accent} style={{ marginVertical: spacing.md }} />
+            ) : (
+              teamMembers.map((member) => (
+                <Pressable key={member.user_id} style={styles.menuItem} onPress={() => handleAssign(member.user_id)}>
+                  <Avatar label={member.full_name || member.email || '?'} seed={member.user_id} size={24} />
+                  <Text style={styles.menuItemText}>{member.full_name || member.email}</Text>
+                </Pressable>
+              ))
+            )}
+          </View>
+        </Pressable>
+      </Modal>
+
       {/* Shared media viewer */}
       <Modal
         visible={mediaViewerOpen}
@@ -1244,7 +1338,7 @@ export default function MessageThreadScreen() {
                   const label = item.contact?.name || item.contact?.phone || 'Unknown';
                   return (
                     <Pressable style={styles.forwardRow} onPress={() => handleForwardTo(item)}>
-                      <Avatar label={label} seed={item.contact?.id} size={40} />
+                      <Avatar label={label} seed={item.contact?.id} size={40} showChannelBadge />
                       <Text style={styles.forwardRowText} numberOfLines={1}>
                         {label}
                       </Text>
@@ -1309,6 +1403,11 @@ function makeStyles(colors: Palette) {
       fontSize: 17,
       fontWeight: '700',
     },
+    pillRow: {
+      flexDirection: 'row',
+      gap: spacing.sm,
+      marginLeft: spacing.xl + spacing.sm,
+    },
     stagePill: {
       flexDirection: 'row',
       alignItems: 'center',
@@ -1318,10 +1417,9 @@ function makeStyles(colors: Palette) {
       borderRadius: radius.pill,
       paddingHorizontal: spacing.sm + 2,
       paddingVertical: 5,
-      marginLeft: spacing.xl + spacing.sm,
       borderWidth: 1,
       borderColor: colors.border,
-      maxWidth: '70%',
+      maxWidth: '48%',
     },
     stagePillText: { color: colors.textSecondary, fontSize: 12, fontWeight: '500', flexShrink: 1 },
     headerActions: { flexDirection: 'row', gap: spacing.sm },
