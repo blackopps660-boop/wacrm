@@ -482,102 +482,121 @@ export function ConversationList({
 
       {/* Lifecycle stage — the literal match for respond.io's sidebar
           ("New Lead 123", "Hot Lead 2", "Customer", ...): a contact has
-          exactly one stage, so this list is naturally exclusive. */}
+          exactly one stage, so this list is naturally exclusive. Rendered
+          as wrapped chips rather than full-width rows — the selected chip
+          fills solid with the stage's own colour (not a generic accent
+          tint) so the active filter reads at a glance. */}
       {stages.length > 0 && (
-        <div className="border-b border-border px-1.5 py-2">
-          <button
-            onClick={() => setSelectedStageId(null)}
-            className={cn(
-              "flex w-full items-center justify-between rounded-md px-2 py-1.5 text-xs font-medium transition-colors",
-              selectedStageId === null
-                ? "bg-primary/10 text-primary"
-                : "text-muted-foreground hover:bg-muted hover:text-foreground"
-            )}
-          >
-            <span>All stages</span>
-            <span className="text-[10px] opacity-80">{sectioned.length}</span>
-          </button>
-          {stages.map((stage) => {
-            const isSelected = selectedStageId === stage.id;
-            const count = sectioned.filter(
-              (c) => c.contact?.lifecycle_stage_id === stage.id
-            ).length;
-            return (
-              <button
-                key={stage.id}
-                onClick={() =>
-                  setSelectedStageId(isSelected ? null : stage.id)
-                }
-                className={cn(
-                  "flex w-full items-center justify-between rounded-md px-2 py-1.5 text-xs font-medium transition-colors",
-                  isSelected
-                    ? "bg-primary/10 text-primary"
-                    : "text-muted-foreground hover:bg-muted hover:text-foreground"
-                )}
-              >
-                <span className="flex min-w-0 items-center gap-2">
-                  <span
-                    className="h-2 w-2 shrink-0 rounded-full"
-                    style={{ backgroundColor: stage.color }}
-                  />
+        <div className="space-y-1.5 border-b border-border px-3 py-2.5">
+          <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+            Stage
+          </p>
+          <div className="flex flex-wrap gap-1.5">
+            <button
+              onClick={() => setSelectedStageId(null)}
+              className={cn(
+                "rounded-full px-2.5 py-1 text-xs font-medium transition-colors",
+                selectedStageId === null
+                  ? "bg-primary text-primary-foreground"
+                  : "bg-muted text-muted-foreground hover:text-foreground"
+              )}
+            >
+              All
+              <span className="ml-1 opacity-80">{sectioned.length}</span>
+            </button>
+            {stages.map((stage) => {
+              const isSelected = selectedStageId === stage.id;
+              const count = sectioned.filter(
+                (c) => c.contact?.lifecycle_stage_id === stage.id
+              ).length;
+              return (
+                <button
+                  key={stage.id}
+                  onClick={() =>
+                    setSelectedStageId(isSelected ? null : stage.id)
+                  }
+                  style={
+                    isSelected
+                      ? { backgroundColor: stage.color, color: "#fff" }
+                      : undefined
+                  }
+                  className={cn(
+                    "inline-flex max-w-40 items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium transition-colors",
+                    !isSelected &&
+                      "bg-muted text-muted-foreground hover:text-foreground"
+                  )}
+                >
+                  {!isSelected && (
+                    <span
+                      className="h-1.5 w-1.5 shrink-0 rounded-full"
+                      style={{ backgroundColor: stage.color }}
+                    />
+                  )}
                   <span className="truncate">{stage.name}</span>
-                </span>
-                <span className="shrink-0 text-[10px] opacity-80">{count}</span>
-              </button>
-            );
-          })}
+                  <span className="shrink-0 opacity-80">{count}</span>
+                </button>
+              );
+            })}
+          </div>
         </div>
       )}
 
-      {/* Tags — a vertical list of every tag with a live count, each row
-          exclusively selecting that one tag (mirrors respond.io's
-          lifecycle sidebar: "New Lead 123", "Hot Lead 2", ...). This is
-          deliberately single-select and separate from the multi-select
-          Tags dropdown further down (which stays for OR-combining
-          several tags) — most agents just want "show me the New Lead
-          queue," not a filter builder. */}
+      {/* Tags — same wrapped-chip treatment as Stage above, each chip
+          exclusively selecting that one tag. Deliberately single-select
+          and separate from the multi-select Tags dropdown further down
+          (which stays for OR-combining several tags) — most agents just
+          want "show me the New Lead queue," not a filter builder. */}
       {tags.length > 0 && (
-        <div className="border-b border-border px-1.5 py-2">
-          <button
-            onClick={() => setSelectedTagIds([])}
-            className={cn(
-              "flex w-full items-center justify-between rounded-md px-2 py-1.5 text-xs font-medium transition-colors",
-              selectedTagIds.length === 0
-                ? "bg-primary/10 text-primary"
-                : "text-muted-foreground hover:bg-muted hover:text-foreground"
-            )}
-          >
-            <span>All tags</span>
-            <span className="text-[10px] opacity-80">{sectioned.length}</span>
-          </button>
-          {tags.map((t) => {
-            const isSelected =
-              selectedTagIds.length === 1 && selectedTagIds[0] === t.id;
-            const count = sectioned.filter((c) =>
-              matchesContactFilters(c, { tagIds: [t.id], company: null })
-            ).length;
-            return (
-              <button
-                key={t.id}
-                onClick={() => setSelectedTagIds(isSelected ? [] : [t.id])}
-                className={cn(
-                  "flex w-full items-center justify-between rounded-md px-2 py-1.5 text-xs font-medium transition-colors",
-                  isSelected
-                    ? "bg-primary/10 text-primary"
-                    : "text-muted-foreground hover:bg-muted hover:text-foreground"
-                )}
-              >
-                <span className="flex min-w-0 items-center gap-2">
-                  <span
-                    className="h-2 w-2 shrink-0 rounded-full"
-                    style={{ backgroundColor: t.color }}
-                  />
+        <div className="space-y-1.5 border-b border-border px-3 py-2.5">
+          <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+            Tags
+          </p>
+          <div className="flex flex-wrap gap-1.5">
+            <button
+              onClick={() => setSelectedTagIds([])}
+              className={cn(
+                "rounded-full px-2.5 py-1 text-xs font-medium transition-colors",
+                selectedTagIds.length === 0
+                  ? "bg-primary text-primary-foreground"
+                  : "bg-muted text-muted-foreground hover:text-foreground"
+              )}
+            >
+              All
+              <span className="ml-1 opacity-80">{sectioned.length}</span>
+            </button>
+            {tags.map((t) => {
+              const isSelected =
+                selectedTagIds.length === 1 && selectedTagIds[0] === t.id;
+              const count = sectioned.filter((c) =>
+                matchesContactFilters(c, { tagIds: [t.id], company: null })
+              ).length;
+              return (
+                <button
+                  key={t.id}
+                  onClick={() => setSelectedTagIds(isSelected ? [] : [t.id])}
+                  style={
+                    isSelected
+                      ? { backgroundColor: t.color, color: "#fff" }
+                      : undefined
+                  }
+                  className={cn(
+                    "inline-flex max-w-40 items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium transition-colors",
+                    !isSelected &&
+                      "bg-muted text-muted-foreground hover:text-foreground"
+                  )}
+                >
+                  {!isSelected && (
+                    <span
+                      className="h-1.5 w-1.5 shrink-0 rounded-full"
+                      style={{ backgroundColor: t.color }}
+                    />
+                  )}
                   <span className="truncate">{t.name}</span>
-                </span>
-                <span className="shrink-0 text-[10px] opacity-80">{count}</span>
-              </button>
-            );
-          })}
+                  <span className="shrink-0 opacity-80">{count}</span>
+                </button>
+              );
+            })}
+          </div>
         </div>
       )}
 

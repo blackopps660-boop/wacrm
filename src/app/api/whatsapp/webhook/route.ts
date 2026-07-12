@@ -1213,6 +1213,21 @@ async function findOrCreateContact(
     return { contact: existingContact, wasCreated: false }
   }
 
+  // New inbound contacts start at the account's first lifecycle stage
+  // (lowest `position`) — by pipeline convention that's "New Lead," but
+  // this reads the actual stage rather than hardcoding the name, so it
+  // still works for accounts that renamed or reordered their stages.
+  // Only queried on the create path (not on every inbound message from
+  // a repeat customer), and a missing/empty stage list just leaves the
+  // contact unstaged rather than failing the whole webhook.
+  const { data: firstStage } = await supabaseAdmin()
+    .from('lifecycle_stages')
+    .select('id')
+    .eq('account_id', accountId)
+    .order('position', { ascending: true })
+    .limit(1)
+    .maybeSingle()
+
   // Create new contact. account_id is the tenancy column;
   // user_id is the NOT NULL FK audit column (no inbound message
   // has a single "user who created" it — we attribute to the
@@ -1224,6 +1239,7 @@ async function findOrCreateContact(
       user_id: configOwnerUserId,
       phone,
       name: name || phone,
+      lifecycle_stage_id: firstStage?.id ?? null,
     })
     .select()
     .single()
