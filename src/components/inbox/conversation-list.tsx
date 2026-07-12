@@ -450,6 +450,58 @@ export function ConversationList({
         </button>
       </div>
 
+      {/* Tags — a vertical list of every tag with a live count, each row
+          exclusively selecting that one tag (mirrors respond.io's
+          lifecycle sidebar: "New Lead 123", "Hot Lead 2", ...). This is
+          deliberately single-select and separate from the multi-select
+          Tags dropdown further down (which stays for OR-combining
+          several tags) — most agents just want "show me the New Lead
+          queue," not a filter builder. */}
+      {tags.length > 0 && (
+        <div className="border-b border-border px-1.5 py-2">
+          <button
+            onClick={() => setSelectedTagIds([])}
+            className={cn(
+              "flex w-full items-center justify-between rounded-md px-2 py-1.5 text-xs font-medium transition-colors",
+              selectedTagIds.length === 0
+                ? "bg-primary/10 text-primary"
+                : "text-muted-foreground hover:bg-muted hover:text-foreground"
+            )}
+          >
+            <span>All tags</span>
+            <span className="text-[10px] opacity-80">{sectioned.length}</span>
+          </button>
+          {tags.map((t) => {
+            const isSelected =
+              selectedTagIds.length === 1 && selectedTagIds[0] === t.id;
+            const count = sectioned.filter((c) =>
+              matchesContactFilters(c, { tagIds: [t.id], company: null })
+            ).length;
+            return (
+              <button
+                key={t.id}
+                onClick={() => setSelectedTagIds(isSelected ? [] : [t.id])}
+                className={cn(
+                  "flex w-full items-center justify-between rounded-md px-2 py-1.5 text-xs font-medium transition-colors",
+                  isSelected
+                    ? "bg-primary/10 text-primary"
+                    : "text-muted-foreground hover:bg-muted hover:text-foreground"
+                )}
+              >
+                <span className="flex min-w-0 items-center gap-2">
+                  <span
+                    className="h-2 w-2 shrink-0 rounded-full"
+                    style={{ backgroundColor: t.color }}
+                  />
+                  <span className="truncate">{t.name}</span>
+                </span>
+                <span className="shrink-0 text-[10px] opacity-80">{count}</span>
+              </button>
+            );
+          })}
+        </div>
+      )}
+
       {/* Search + Filter */}
       <div className="space-y-2 border-b border-border p-3">
         <div className="relative">
