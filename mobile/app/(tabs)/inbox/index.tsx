@@ -18,18 +18,21 @@ import { supabase } from '../../../lib/supabase';
 import { useAuth } from '../../../hooks/use-auth';
 import { useAppTheme } from '../../../hooks/use-theme';
 import { useRealtime } from '../../../hooks/use-realtime';
-import { loadLifecycleStages } from '../../../lib/contacts/queries';
+import { loadLifecycleStages, loadTags } from '../../../lib/contacts/queries';
 import { Avatar } from '../../../components/Avatar';
 import { radius, scaleFontSizes, spacing, type Palette } from '../../../lib/theme';
-import type { Conversation, ConversationStatus, LifecycleStage } from '../../../lib/types';
+import type { Conversation, ConversationStatus, LifecycleStage, Tag } from '../../../lib/types';
 
 const PAGE_SIZE = 30;
 const ROW_HEIGHT = 74;
 const SEARCH_DEBOUNCE_MS = 350;
 // Same embed shape as the web app's CONVERSATION_SELECT
-// (src/lib/inbox/conversations.ts), plus the lifecycle stage join so
-// the filter chips below can match on it client-side.
-const CONVERSATION_SELECT = '*, contact:contacts(*, lifecycle_stage:lifecycle_stages(*))';
+// (src/lib/inbox/conversations.ts): lifecycle stage join for the stage
+// chips, plus contact_tags(tags(*)) for the tag chips — flattened onto
+// contact.tags in fetchConversations below, same as web's
+// normalizeConversation.
+const CONVERSATION_SELECT =
+  '*, contact:contacts(*, lifecycle_stage:lifecycle_stages(*), contact_tags(tags(*)))';
 
 const STATUS_TABS: { value: 'all' | ConversationStatus; label: string }[] = [
   { value: 'all', label: 'All' },
@@ -173,6 +176,8 @@ export default function InboxListScreen() {
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [stages, setStages] = useState<LifecycleStage[]>([]);
   const [selectedStageId, setSelectedStageId] = useState<string | null>(null);
+  const [tags, setTags] = useState<Tag[]>([]);
+  const [selectedTagId, setSelectedTagId] = useState<string | null>(null);
   const [statusFilter, setStatusFilter] = useState<'all' | ConversationStatus>('all');
   const [searchInput, setSearchInput] = useState('');
   const [search, setSearch] = useState('');
@@ -202,7 +207,24 @@ export default function InboxListScreen() {
       console.error('[Inbox] fetch conversations error:', error.message);
       return;
     }
-    setConversations((data as unknown as Conversation[]) ?? []);
+    // Flatten the embedded contact_tags(tags(*)) join onto
+    // contact.tags — same shape as web's normalizeConversation
+    // (src/lib/inbox/conversations.ts).
+    type RawRow = Conversation & {
+      contact?: (Conversation['contact'] & { contact_tags?: { tags: Tag | null }[] }) | null;
+    };
+    const rows = ((data as unknown as RawRow[]) ?? []).map((row) => {
+      if (!row.contact) return row as Conversation;
+      const { contact_tags, ...contact } = row.contact;
+      return {
+        ...row,
+        contact: {
+          ...contact,
+          tags: (contact_tags ?? []).map((ct) => ct.tags).filter((t): t is Tag => t != null),
+        },
+      } as Conversation;
+    });
+    setConversations(rows);
   }, []);
 
   // `accountId` dependency so switching workspace (Phase 4) re-fetches
@@ -212,6 +234,7 @@ export default function InboxListScreen() {
     setLoading(true);
     fetchConversations().finally(() => setLoading(false));
     loadLifecycleStages(supabase).then(setStages).catch(console.error);
+    loadTags(supabase).then(setTags).catch(console.error);
   }, [fetchConversations, accountId]);
 
   // Live updates while the list is open. A burst of several messages
@@ -295,6 +318,9 @@ export default function InboxListScreen() {
     if (selectedStageId) {
       rows = rows.filter((c) => c.contact?.lifecycle_stage_id === selectedStageId);
     }
+    if (selectedTagId) {
+      rows = rows.filter((c) => c.contact?.tags?.some((t) => t.id === selectedTagId));
+    }
     const term = search.trim().toLowerCase();
     if (term) {
       rows = rows.filter((c) => {
@@ -310,7 +336,7 @@ export default function InboxListScreen() {
     const rest = rows.filter((c) => !c.pinned_at);
     pinned.sort((a, b) => new Date(b.pinned_at!).getTime() - new Date(a.pinned_at!).getTime());
     return [...pinned, ...rest];
-  }, [conversations, statusFilter, selectedStageId, search]);
+  }, [conversations, statusFilter, selectedStageId, selectedTagId, search]);
 
   if (loading) {
     return (
@@ -387,6 +413,34 @@ export default function InboxListScreen() {
         </View>
       )}
 
+      {tags.length > 0 && (
+        <View style={styles.filterRow}>
+          <FlatList
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            data={tags}
+            keyExtractor={(item) => item.id}
+            contentContainerStyle={{ gap: spacing.sm, paddingHorizontal: spacing.lg }}
+            renderItem={({ item }) => {
+              const active = selectedTagId === item.id;
+              return (
+                <Pressable
+                  onPress={() => setSelectedTagId(active ? null : item.id)}
+                  style={[
+                    styles.filterChip,
+                    active && { backgroundColor: item.color, borderColor: item.color },
+                  ]}
+                >
+                  <Text style={[styles.filterChipText, active && styles.filterChipTextActive]}>
+                    {item.name}
+                  </Text>
+                </Pressable>
+              );
+            }}
+          />
+        </View>
+      )}
+
       {archivedCount > 0 && (
         <Pressable style={styles.archivedRow} onPress={() => router.push('/inbox/archived')}>
           <Ionicons name="archive-outline" size={18} color={colors.textFaint} />
@@ -407,7 +461,7 @@ export default function InboxListScreen() {
         ListEmptyComponent={
           <View style={styles.center}>
             <Text style={styles.emptyText}>
-              {search || selectedStageId || statusFilter !== 'all'
+              {search || selectedStageId || selectedTagId || statusFilter !== 'all'
                 ? 'No matching conversations'
                 : 'No conversations yet.'}
             </Text>
