@@ -1,13 +1,15 @@
 import type { Conversation, Contact, Tag } from "@/types";
 
 /**
- * Conversation select that embeds the contact plus its tags, so the Inbox
- * can filter conversations by contact tag without a second round-trip.
- * `contact_tags(tags(*))` returns the join rows; {@link normalizeConversation}
- * flattens them onto `contact.tags`.
+ * Conversation select that embeds the contact plus its tags and lifecycle
+ * stage, so the Inbox can filter conversations by either without a second
+ * round-trip. `contact_tags(tags(*))` returns the join rows;
+ * {@link normalizeConversation} flattens them onto `contact.tags`.
+ * `lifecycle_stage:lifecycle_stages(*)` needs no flattening — it maps
+ * straight onto `Contact.lifecycle_stage`.
  */
 export const CONVERSATION_SELECT =
-  "*, contact:contacts(*, contact_tags(tags(*)))";
+  "*, contact:contacts(*, contact_tags(tags(*)), lifecycle_stage:lifecycle_stages(*))";
 
 /** Raw shape returned by {@link CONVERSATION_SELECT} before flattening. */
 type RawContact = Contact & { contact_tags?: { tags: Tag | null }[] };

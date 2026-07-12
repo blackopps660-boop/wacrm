@@ -9,7 +9,7 @@ import {
 } from "@/lib/inbox/conversations";
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/hooks/use-auth";
-import type { Conversation, ConversationStatus, Tag } from "@/types";
+import type { Conversation, ConversationStatus, LifecycleStage, Tag } from "@/types";
 import { Search, ChevronDown, X, Bot, User, CircleDashed } from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
 import { Input } from "@/components/ui/input";
@@ -105,6 +105,13 @@ export function ConversationList({
   const [tags, setTags] = useState<Tag[]>([]);
   const [selectedTagIds, setSelectedTagIds] = useState<string[]>([]);
   const [selectedCompany, setSelectedCompany] = useState<string | null>(null);
+  // Lifecycle stage — a single, exclusive filter (a contact has at most
+  // one stage), unlike tags which are OR-combinable. This is the literal
+  // match for respond.io's sidebar ("New Lead 123", "Hot Lead 2", ...),
+  // which surfaces stages, not colour tags, despite both being loosely
+  // called "tags" in casual conversation.
+  const [stages, setStages] = useState<LifecycleStage[]>([]);
+  const [selectedStageId, setSelectedStageId] = useState<string | null>(null);
 
   // Keep the latest callback in a ref so the fetch effect below can
   // have a stable, empty-dep identity. Previously the fetch useCallback
@@ -236,6 +243,23 @@ export function ConversationList({
     };
   }, []);
 
+  // Lifecycle stage definitions for the sidebar — same "load once, keep
+  // stable" reasoning as tags above.
+  useEffect(() => {
+    const supabase = createClient();
+    let cancelled = false;
+    (async () => {
+      const { data } = await supabase
+        .from("lifecycle_stages")
+        .select("*")
+        .order("position", { ascending: true });
+      if (!cancelled && data) setStages(data as LifecycleStage[]);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   // Company options are derived from the loaded conversations — there's no
   // separate companies table, and only companies with a live conversation
   // are worth offering as an inbox filter.
@@ -317,6 +341,12 @@ export function ConversationList({
       );
     }
 
+    if (selectedStageId !== null) {
+      result = result.filter(
+        (c) => c.contact?.lifecycle_stage_id === selectedStageId
+      );
+    }
+
     if (search.trim()) {
       const q = search.toLowerCase();
       result = result.filter((c) => {
@@ -328,7 +358,7 @@ export function ConversationList({
     }
 
     return result;
-  }, [sectioned, section, filter, ownerFilter, user, search, selectedTagIds, selectedCompany]);
+  }, [sectioned, section, filter, ownerFilter, user, search, selectedTagIds, selectedCompany, selectedStageId]);
 
   const toggleTag = useCallback((id: string) => {
     setSelectedTagIds((prev) =>
@@ -449,6 +479,55 @@ export function ConversationList({
           )}
         </button>
       </div>
+
+      {/* Lifecycle stage — the literal match for respond.io's sidebar
+          ("New Lead 123", "Hot Lead 2", "Customer", ...): a contact has
+          exactly one stage, so this list is naturally exclusive. */}
+      {stages.length > 0 && (
+        <div className="border-b border-border px-1.5 py-2">
+          <button
+            onClick={() => setSelectedStageId(null)}
+            className={cn(
+              "flex w-full items-center justify-between rounded-md px-2 py-1.5 text-xs font-medium transition-colors",
+              selectedStageId === null
+                ? "bg-primary/10 text-primary"
+                : "text-muted-foreground hover:bg-muted hover:text-foreground"
+            )}
+          >
+            <span>All stages</span>
+            <span className="text-[10px] opacity-80">{sectioned.length}</span>
+          </button>
+          {stages.map((stage) => {
+            const isSelected = selectedStageId === stage.id;
+            const count = sectioned.filter(
+              (c) => c.contact?.lifecycle_stage_id === stage.id
+            ).length;
+            return (
+              <button
+                key={stage.id}
+                onClick={() =>
+                  setSelectedStageId(isSelected ? null : stage.id)
+                }
+                className={cn(
+                  "flex w-full items-center justify-between rounded-md px-2 py-1.5 text-xs font-medium transition-colors",
+                  isSelected
+                    ? "bg-primary/10 text-primary"
+                    : "text-muted-foreground hover:bg-muted hover:text-foreground"
+                )}
+              >
+                <span className="flex min-w-0 items-center gap-2">
+                  <span
+                    className="h-2 w-2 shrink-0 rounded-full"
+                    style={{ backgroundColor: stage.color }}
+                  />
+                  <span className="truncate">{stage.name}</span>
+                </span>
+                <span className="shrink-0 text-[10px] opacity-80">{count}</span>
+              </button>
+            );
+          })}
+        </div>
+      )}
 
       {/* Tags — a vertical list of every tag with a live count, each row
           exclusively selecting that one tag (mirrors respond.io's
