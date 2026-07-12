@@ -27,6 +27,7 @@ import {
 } from "lucide-react";
 
 import { useAuth } from "@/hooks/use-auth";
+import { useCan } from "@/hooks/use-can";
 import { cn } from "@/lib/utils";
 import type { Workspace } from "@/types";
 import { Button } from "@/components/ui/button";
@@ -54,6 +55,7 @@ const MAX_NAME_LEN = 80;
 
 export function WorkspaceSwitcher() {
   const { account, accountRole } = useAuth();
+  const canCreateWorkspace = useCan("create-workspace");
   const [workspaces, setWorkspaces] = useState<Workspace[] | null>(null);
   const [switchingId, setSwitchingId] = useState<string | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
@@ -170,16 +172,28 @@ export function WorkspaceSwitcher() {
                   </DropdownMenuItem>
                 ))}
               </DropdownMenuGroup>
-              <DropdownMenuSeparator className="bg-border" />
+              {canCreateWorkspace ? (
+                <DropdownMenuSeparator className="bg-border" />
+              ) : null}
             </>
           ) : null}
-          <DropdownMenuItem
-            onClick={() => setCreateOpen(true)}
-            className="text-popover-foreground focus:bg-accent focus:text-accent-foreground"
-          >
-            <Plus className="size-4" />
-            Create workspace
-          </DropdownMenuItem>
+          {canCreateWorkspace ? (
+            <DropdownMenuItem
+              onClick={() => setCreateOpen(true)}
+              className="text-popover-foreground focus:bg-accent focus:text-accent-foreground"
+            >
+              <Plus className="size-4" />
+              Create workspace
+            </DropdownMenuItem>
+          ) : !hasMultiple ? (
+            // Agents/viewers can't self-serve a new workspace, and if
+            // they also only belong to the one they're currently in,
+            // there's nothing else to render here — an empty dropdown
+            // reads as broken, so say so explicitly instead.
+            <DropdownMenuLabel className="text-muted-foreground font-normal">
+              No other workspaces
+            </DropdownMenuLabel>
+          ) : null}
         </DropdownMenuContent>
       </DropdownMenu>
 

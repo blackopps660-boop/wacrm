@@ -18,7 +18,7 @@
 
 import { NextResponse } from "next/server";
 
-import { getCurrentAccount, toErrorResponse } from "@/lib/auth/account";
+import { getCurrentAccount, requireRole, toErrorResponse } from "@/lib/auth/account";
 import {
   checkRateLimit,
   rateLimitResponse,
@@ -110,7 +110,14 @@ const MAX_NAME_LEN = 80;
 
 export async function POST(request: Request) {
   try {
-    const ctx = await getCurrentAccount();
+    // Admin/owner only — creating a workspace makes the caller owner
+    // of a brand-new, unrelated account, and self-serve access to that
+    // is meant to be an escape hatch for people already trusted with
+    // account-wide administration, not agents/viewers invited into an
+    // existing one. The UI already hides this button for them
+    // (WorkspaceSwitcher's `useCan("create-workspace")` gate) — this is
+    // the server-side backstop so a direct API call can't bypass it.
+    const ctx = await requireRole("admin");
 
     const limit = checkRateLimit(
       `account:createWorkspace:${ctx.userId}`,

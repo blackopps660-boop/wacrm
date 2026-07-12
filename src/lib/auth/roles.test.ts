@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   ACCOUNT_ROLES,
   type AccountRole,
+  canCreateWorkspace,
   canDeleteAccount,
   canEditSettings,
   canManageMembers,
@@ -126,5 +127,12 @@ describe("capability predicates", () => {
     expect(canTransferOwnership("admin")).toBe(false);
     expect(canTransferOwnership("agent")).toBe(false);
     expect(canTransferOwnership("viewer")).toBe(false);
+  });
+
+  it("canCreateWorkspace: admin+ only", () => {
+    expect(canCreateWorkspace("owner")).toBe(true);
+    expect(canCreateWorkspace("admin")).toBe(true);
+    expect(canCreateWorkspace("agent")).toBe(false);
+    expect(canCreateWorkspace("viewer")).toBe(false);
   });
 });

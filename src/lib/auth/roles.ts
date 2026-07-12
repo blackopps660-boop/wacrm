@@ -98,6 +98,17 @@ export function canViewOnly(role: AccountRole): boolean {
   return role === "viewer";
 }
 
+/**
+ * Owner / admin: spin up a brand-new, unrelated workspace (a fresh
+ * `accounts` row the caller becomes owner of via the `create_workspace`
+ * RPC). Agents and viewers are meant to be confined to the workspace(s)
+ * they were invited into — this is a self-serve escape hatch, not an
+ * operational-data action, so it does NOT fall under `canSendMessages`.
+ */
+export function canCreateWorkspace(role: AccountRole): boolean {
+  return hasMinRole(role, "admin");
+}
+
 /** Owner only: irreversible destructive operations. */
 export function canDeleteAccount(role: AccountRole): boolean {
   return role === "owner";
