@@ -1,0 +1,210 @@
+"use client";
+
+import { useEffect, useState } from "react";
+import { toast } from "sonner";
+import { Building2, Loader2, Lock, LockOpen } from "lucide-react";
+
+import { useAuth } from "@/hooks/use-auth";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import {
+  Card,
+  CardContent,
+  CardHeader,
+  CardTitle,
+  CardDescription,
+} from "@/components/ui/card";
+import { SettingsPanelHead } from "./settings-panel-head";
+
+const MAX_NAME_LEN = 80;
+
+/**
+ * Workspace name + lock. Both go through PATCH /api/account rather
+ * than a direct Supabase write (unlike DealsSettings' default-currency
+ * field) because the route also enforces the lock: a rename attempt
+ * while locked is rejected server-side (423), so this can't be
+ * bypassed by a client that skips the disabled-input UI state.
+ */
+export function WorkspaceGeneralSettings() {
+  const { account, canEditSettings, profileLoading, refreshProfile } = useAuth();
+
+  const [name, setName] = useState("");
+  const [isLocked, setIsLocked] = useState(false);
+  const [loaded, setLoaded] = useState(false);
+  const [savingName, setSavingName] = useState(false);
+  const [togglingLock, setTogglingLock] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch("/api/account", { cache: "no-store" });
+        if (!res.ok || cancelled) return;
+        const data = (await res.json()) as {
+          account: { name: string; is_locked: boolean };
+        };
+        if (!cancelled) {
+          setName(data.account.name);
+          setIsLocked(data.account.is_locked);
+          setLoaded(true);
+        }
+      } catch (err) {
+        console.error("[WorkspaceGeneralSettings] load error:", err);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const dirty = loaded && name.trim() !== (account?.name ?? "");
+
+  async function handleSaveName() {
+    const trimmed = name.trim();
+    if (!trimmed || trimmed.length > MAX_NAME_LEN) return;
+    setSavingName(true);
+    try {
+      const res = await fetch("/api/account", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: trimmed }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        toast.error(data.error || "Failed to rename workspace");
+        return;
+      }
+      toast.success("Workspace renamed");
+      await refreshProfile();
+    } catch (err) {
+      console.error("[WorkspaceGeneralSettings] rename error:", err);
+      toast.error("Could not reach the server");
+    } finally {
+      setSavingName(false);
+    }
+  }
+
+  async function handleToggleLock() {
+    const next = !isLocked;
+    setTogglingLock(true);
+    try {
+      const res = await fetch("/api/account", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ is_locked: next }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        toast.error(data.error || "Failed to update lock");
+        return;
+      }
+      setIsLocked(next);
+      toast.success(next ? "Workspace locked" : "Workspace unlocked");
+    } catch (err) {
+      console.error("[WorkspaceGeneralSettings] lock toggle error:", err);
+      toast.error("Could not reach the server");
+    } finally {
+      setTogglingLock(false);
+    }
+  }
+
+  return (
+    <section className="max-w-2xl animate-in fade-in-50 duration-200">
+      <SettingsPanelHead
+        title="Workspace"
+        description="This workspace's name, and whether it's locked against accidental changes."
+      />
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2 text-foreground">
+            <Building2 className="size-4 text-primary" />
+            Workspace name
+          </CardTitle>
+          <CardDescription className="text-muted-foreground">
+            Shown across the app — sidebar, workspace switcher, and invites.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="grid gap-2 sm:max-w-sm">
+            <Label className="text-muted-foreground">Name</Label>
+            <Input
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              maxLength={MAX_NAME_LEN}
+              disabled={!canEditSettings || !loaded || isLocked}
+              className="bg-muted border-border text-foreground"
+            />
+            {isLocked ? (
+              <p className="text-xs text-amber-400">
+                Workspace is locked — unlock it below before renaming.
+              </p>
+            ) : !canEditSettings ? (
+              <p className="text-xs text-muted-foreground">
+                Only account admins can rename the workspace.
+              </p>
+            ) : null}
+          </div>
+
+          {canEditSettings && (
+            <Button
+              onClick={handleSaveName}
+              disabled={savingName || !dirty || isLocked || profileLoading}
+              className="bg-primary text-primary-foreground hover:bg-primary/90"
+            >
+              {savingName ? (
+                <>
+                  <Loader2 className="size-4 animate-spin" />
+                  Saving...
+                </>
+              ) : (
+                "Save"
+              )}
+            </Button>
+          )}
+        </CardContent>
+      </Card>
+
+      <Card className="mt-6">
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2 text-foreground">
+            {isLocked ? (
+              <Lock className="size-4 text-amber-400" />
+            ) : (
+              <LockOpen className="size-4 text-primary" />
+            )}
+            {isLocked ? "Locked" : "Unlocked"}
+          </CardTitle>
+          <CardDescription className="text-muted-foreground">
+            Locking only protects the workspace name above from accidental
+            edits — messaging, contacts, and every other feature keep
+            working normally while locked.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          {canEditSettings ? (
+            <Button
+              variant="outline"
+              onClick={handleToggleLock}
+              disabled={togglingLock || !loaded}
+              className="border-border text-foreground hover:bg-muted"
+            >
+              {togglingLock ? (
+                <Loader2 className="size-4 animate-spin" />
+              ) : isLocked ? (
+                <LockOpen className="size-4" />
+              ) : (
+                <Lock className="size-4" />
+              )}
+              {isLocked ? "Unlock workspace" : "Lock workspace"}
+            </Button>
+          ) : (
+            <p className="text-xs text-muted-foreground">
+              Only account admins can lock or unlock the workspace.
+            </p>
+          )}
+        </CardContent>
+      </Card>
+    </section>
+  );
+}

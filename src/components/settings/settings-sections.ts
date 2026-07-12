@@ -1,4 +1,5 @@
 import {
+  Building2,
   Coins,
   FileText,
   Inbox,
@@ -26,6 +27,7 @@ export const SETTINGS_SECTIONS = [
   'profile',
   'security',
   'appearance',
+  'general',
   'whatsapp',
   'inbox',
   'templates',
@@ -52,6 +54,7 @@ export const SECTION_META: Record<SettingsSection, SectionMeta> = {
   profile: { id: 'profile', label: 'Your profile', icon: User, group: 'account' },
   security: { id: 'security', label: 'Login & security', icon: Shield, group: 'account' },
   appearance: { id: 'appearance', label: 'Appearance', icon: Palette, group: 'account' },
+  general: { id: 'general', label: 'Workspace', icon: Building2, group: 'workspace' },
   whatsapp: { id: 'whatsapp', label: 'WhatsApp', icon: PlugZap, group: 'workspace' },
   inbox: { id: 'inbox', label: 'Inbox', icon: Inbox, group: 'workspace' },
   templates: { id: 'templates', label: 'Templates', icon: FileText, group: 'workspace' },

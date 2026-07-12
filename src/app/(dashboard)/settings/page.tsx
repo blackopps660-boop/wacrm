@@ -10,6 +10,7 @@ import { SettingsOverview } from '@/components/settings/settings-overview';
 import { ProfileForm } from '@/components/settings/profile-form';
 import { SecurityPanel } from '@/components/settings/security-panel';
 import { AppearancePanel } from '@/components/settings/appearance-panel';
+import { WorkspaceGeneralSettings } from '@/components/settings/workspace-general-settings';
 import { WhatsAppConfig } from '@/components/settings/whatsapp-config';
 import { InboxSettings } from '@/components/settings/inbox-settings';
 import { TemplateManager } from '@/components/settings/template-manager';
@@ -56,6 +57,7 @@ export default function SettingsPage() {
     profile: <ProfileForm />,
     security: <SecurityPanel />,
     appearance: <AppearancePanel />,
+    general: <WorkspaceGeneralSettings />,
     whatsapp: <WhatsAppConfig />,
     inbox: <InboxSettings />,
     templates: <TemplateManager />,

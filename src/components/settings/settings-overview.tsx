@@ -35,7 +35,7 @@ export function SettingsOverview({
 }: {
   onSelect: (section: SettingsSection) => void;
 }) {
-  const { user, profile, accountId, accountRole, defaultCurrency, canManageMembers } =
+  const { user, profile, account, accountId, accountRole, defaultCurrency, canManageMembers } =
     useAuth();
   const { mode, theme } = useTheme();
 
@@ -154,6 +154,11 @@ export function SettingsOverview({
     loading: boolean;
     subtitle: ReactNode;
   }[] = [
+    {
+      section: 'general',
+      loading: !account,
+      subtitle: account?.name ?? 'Name and lock',
+    },
     {
       section: 'whatsapp',
       loading: whatsappLoading,
