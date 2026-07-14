@@ -609,7 +609,20 @@ export default function MessageThreadScreen() {
   async function finishRecording() {
     isLockedRef.current = false;
     setIsLocked(false);
-    await recorder.stop();
+    // recorder.stop() bridges to Android's MediaRecorder.stop(), which
+    // throws IllegalStateException on a very short/invalid recording
+    // (e.g. a quick tap-and-release). Every other stop() call site in
+    // this file (cancelRecording above, the unmount guard) already
+    // catches it — this one didn't, so that throw became an unhandled
+    // promise rejection in this fire-and-forget async function and took
+    // the whole app down instead of just failing this one recording.
+    try {
+      await recorder.stop();
+    } catch (err) {
+      console.error('[finishRecording] stop error:', err);
+      setSendError('Recording was too short to send. Hold the mic a little longer.');
+      return;
+    }
     const uri = recorder.uri;
     if (!uri || !accountId) return;
     setUploading(true);
