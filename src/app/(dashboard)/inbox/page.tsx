@@ -15,6 +15,7 @@ import type {
   ConversationOwnerKind,
 } from "@/types";
 import { useRealtime } from "@/hooks/use-realtime";
+import { useAuth } from "@/hooks/use-auth";
 import { ConversationList } from "@/components/inbox/conversation-list";
 import { MessageThread } from "@/components/inbox/message-thread";
 import { ContactSidebar } from "@/components/inbox/contact-sidebar";
@@ -29,6 +30,7 @@ const CONTACT_PANEL_STORAGE_KEY = "wacrm:inbox:contact-panel-open";
 export default function InboxPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
+  const { accountId } = useAuth();
   /**
    * `?c=<id>` deep-link support. Used when landing here from the
    * dashboard's recent-conversations list so the right thread opens
@@ -338,7 +340,20 @@ export default function InboxPage() {
     channelName: "inbox-realtime",
     onMessageEvent: handleMessageEvent,
     onConversationEvent: handleConversationEvent,
-    enabled: true,
+    // Scope both subscriptions to this account. Without this, every
+    // open inbox tab received every message/conversation change for
+    // every tenant on the whole instance and discarded almost all of
+    // it client-side — invisible with a handful of test conversations,
+    // but with real WhatsApp traffic flowing (70+ live conversations)
+    // the flood of irrelevant events backed up React's render queue
+    // badly enough to make clicks look laggy/stuck on stale state.
+    // `messages` didn't carry account_id until migration
+    // 052_messages_account_id.sql added it specifically to make this
+    // filter possible (Realtime's filter syntax only matches columns
+    // on the subscribed table, not a join to conversations).
+    messagesFilter: accountId ? `account_id=eq.${accountId}` : undefined,
+    conversationsFilter: accountId ? `account_id=eq.${accountId}` : undefined,
+    enabled: !!accountId,
   });
 
   /**

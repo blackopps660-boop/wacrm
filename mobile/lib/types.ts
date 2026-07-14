@@ -82,6 +82,9 @@ export type MessageStatus = 'sending' | 'sent' | 'delivered' | 'read' | 'failed'
 export interface Message {
   id: string;
   conversation_id: string;
+  /** Denormalized from conversations.account_id (migration 052) so
+   *  Realtime can filter this table server-side. */
+  account_id?: string;
   sender_type: SenderType;
   sender_id?: string;
   content_type: ContentType;

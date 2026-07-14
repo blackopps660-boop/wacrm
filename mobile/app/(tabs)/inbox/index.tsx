@@ -256,6 +256,15 @@ export default function InboxListScreen() {
     channelName: 'mobile-inbox-list',
     onConversationEvent: scheduleRefetch,
     onMessageEvent: scheduleRefetch,
+    // Same fix as the web inbox (src/hooks/use-realtime.ts): without
+    // this, the list re-subscribes to every message/conversation
+    // change for every tenant on the whole instance, not just this
+    // account, and the web app's own version of this exact gap is what
+    // caused visible lag once an account had real WhatsApp traffic
+    // flowing through 70+ conversations.
+    messagesFilter: accountId ? `account_id=eq.${accountId}` : undefined,
+    conversationsFilter: accountId ? `account_id=eq.${accountId}` : undefined,
+    enabled: !!accountId,
   });
 
   async function onRefresh() {
