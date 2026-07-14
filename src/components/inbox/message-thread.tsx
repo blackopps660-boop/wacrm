@@ -573,7 +573,23 @@ export function MessageThread({
   // Auto-scroll to bottom on new messages. Skipped once after a "load
   // older" fetch — that prepend already had its scroll position handled
   // by the layout effect above; jumping to the bottom here would undo it.
-  useEffect(() => {
+  //
+  // Was a plain `useEffect` keyed only on `messages`, which runs AFTER
+  // paint — the user could briefly see the thread un-scrolled, or (if
+  // it fired while the loading spinner's content hadn't actually
+  // mounted yet) measure a stale/short scrollHeight and land short of
+  // the true bottom. That read as "opens in the middle," depending on
+  // timing. `useLayoutEffect` runs synchronously right after the DOM
+  // updates but before the browser paints, so the jump happens
+  // invisibly. The `loading` guard skips the effect entirely while the
+  // spinner is showing (nothing real to measure yet — it re-fires once
+  // `loading` flips false and the actual message list has mounted).
+  // `conversationId` is in the deps as a defensive belt-and-suspenders
+  // signal for "this is a fresh conversation," in case `messages`
+  // itself doesn't change reference on some future refactor of the
+  // instant-open cache.
+  useLayoutEffect(() => {
+    if (loading) return; // content not mounted yet — nothing to measure
     if (skipAutoScrollRef.current) {
       skipAutoScrollRef.current = false;
       return;
@@ -582,7 +598,7 @@ export function MessageThread({
       const el = scrollRef.current;
       el.scrollTop = el.scrollHeight;
     }
-  }, [messages]);
+  }, [messages, loading, conversationId]);
 
   const handleSend = useCallback(
     async (text: string, replyToId?: string) => {

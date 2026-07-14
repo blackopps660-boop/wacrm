@@ -322,6 +322,28 @@ export default function MessageThreadScreen() {
   const [assignPickerOpen, setAssignPickerOpen] = useState(false);
   const listRef = useRef<FlatList<ListItem>>(null);
 
+  // Land at the bottom (most recent message) whenever the thread first
+  // becomes ready to show — whether that's an instant cache-hit
+  // (messagesReady already true on mount) or after the network fetch
+  // resolves. `onContentSizeChange` on the FlatList below already
+  // calls scrollToEnd, but it only fires when the list's measured
+  // content size changes — with async-loading image/audio bubbles
+  // still growing rows after the first paint, that one call can land
+  // short of the true bottom (reads as "opens in the middle"). This
+  // re-fires scrollToEnd a couple more times shortly after the list
+  // mounts to catch those late height changes without needing a full
+  // inverted-list rewrite.
+  useEffect(() => {
+    if (!messagesReady) return;
+    const t1 = setTimeout(() => listRef.current?.scrollToEnd({ animated: false }), 50);
+    const t2 = setTimeout(() => listRef.current?.scrollToEnd({ animated: false }), 300);
+    return () => {
+      clearTimeout(t1);
+      clearTimeout(t2);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [messagesReady, conversationId]);
+
   const sendPlayer = useAudioPlayer(sendSound);
   const receivePlayer = useAudioPlayer(receiveSound);
   const recorder = useAudioRecorder({ ...RecordingPresets.HIGH_QUALITY, isMeteringEnabled: true });
@@ -845,6 +867,20 @@ export default function MessageThreadScreen() {
   }, [messages, pending, searchQuery]);
 
   const isSearching = searchQuery.trim().length > 0;
+
+  // Closing search leaves the list wherever the search results had it
+  // scrolled — onContentSizeChange's `!isSearching` guard only
+  // prevents auto-scrolling *during* search, it doesn't re-anchor to
+  // the bottom once search closes. Re-land at the bottom to match
+  // WhatsApp's own behavior (closing search returns you to the latest
+  // message, not wherever a search result happened to be).
+  const wasSearchingRef = useRef(false);
+  useEffect(() => {
+    if (wasSearchingRef.current && !isSearching) {
+      setTimeout(() => listRef.current?.scrollToEnd({ animated: false }), 50);
+    }
+    wasSearchingRef.current = isSearching;
+  }, [isSearching]);
 
   // Instant header: the real `contact` record (once fetched) always
   // wins, but until then we render from what the inbox list already
