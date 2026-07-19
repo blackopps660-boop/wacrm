@@ -229,6 +229,28 @@ export function ConversationList({
     }
   }, [hasMore, loadingMore]);
 
+  // Auto-loads older pages as the list scrolls near its end, instead of
+  // requiring an explicit "Load older conversations" click every 50 rows
+  // — at real scale (a few hundred conversations) that read as "most of
+  // my chats are just missing" since nothing suggested more existed below
+  // the fold. loadMore() is already guarded against overlapping/redundant
+  // calls (see its own loadingMore/hasMore check above), so it's safe to
+  // fire this on every intersection without extra debouncing here.
+  const sentinelRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!hasMore) return;
+    const el = sentinelRef.current;
+    if (!el) return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries[0]?.isIntersecting) void loadMore();
+      },
+      { rootMargin: "300px" },
+    );
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [hasMore, loadMore]);
+
   // Tag definitions for the filter picker — loaded once so labels/colours
   // stay stable regardless of which conversations happen to be loaded.
   useEffect(() => {
@@ -808,9 +830,12 @@ export function ConversationList({
         )}
         {/* Only the most recent PAGE_SIZE conversations load up front
             (issue: unbounded inbox load time as history accumulates).
-            Older ones are one click away rather than loaded eagerly. */}
+            Older pages auto-load as this sentinel scrolls into view (see
+            the IntersectionObserver effect above); the button underneath
+            is a visible fallback for the brief moment before that fires,
+            and while a page is in flight. */}
         {!loading && hasMore && (
-          <div className="p-3">
+          <div ref={sentinelRef} className="p-3">
             <Button
               variant="outline"
               size="sm"
