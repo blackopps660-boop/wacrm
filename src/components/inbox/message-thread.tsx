@@ -58,6 +58,7 @@ import {
 } from "./message-composer";
 import { deleteAccountMedia } from "@/lib/storage/upload-media";
 import { TemplatePicker } from "./template-picker";
+import { extractVariableIndices } from "@/lib/whatsapp/template-validators";
 import { buildReplyPreview } from "./reply-quote";
 import { toast } from "sonner";
 
@@ -184,7 +185,7 @@ export function MessageThread({
   contactPanelOpen,
   onToggleContactPanel,
 }: MessageThreadProps) {
-  const { user } = useAuth();
+  const { user, accountId } = useAuth();
   const { getPresence, getRow, now } = usePresence();
   const [loading, setLoading] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -204,6 +205,15 @@ export function MessageThread({
   const skipAutoScrollRef = useRef(false);
   const prevScrollHeightRef = useRef<number | null>(null);
   const [templateModalOpen, setTemplateModalOpen] = useState(false);
+  // The account's designated one-click "quick re-engage" template
+  // (Settings → Inbox), if any — lets the expired-session banner send
+  // immediately instead of always opening the full picker. Only usable
+  // automatically when it needs at most the contact's name as {{1}};
+  // anything else falls back to the picker since we have no other
+  // values to fill in on its behalf.
+  const [defaultReengageTemplate, setDefaultReengageTemplate] =
+    useState<MessageTemplate | null>(null);
+  const [sendingReengage, setSendingReengage] = useState(false);
   const [profiles, setProfiles] = useState<Profile[]>([]);
   // Whether the AI agent is a real, currently-usable assignee — not
   // just "a row exists". Mirrors the eligibility auto-reply itself
@@ -287,6 +297,41 @@ export function MessageThread({
       cancelled = true;
     };
   }, []);
+
+  // The account-wide "quick re-engage" template (Settings → Inbox).
+  // Loaded once per account rather than per-conversation — it's the
+  // same row for every expired thread in this workspace.
+  useEffect(() => {
+    if (!accountId) return;
+    let cancelled = false;
+    (async () => {
+      const supabase = createClient();
+      const { data: acct } = await supabase
+        .from("accounts")
+        .select("default_reengagement_template_id")
+        .eq("id", accountId)
+        .maybeSingle();
+      const templateId = acct?.default_reengagement_template_id as
+        | string
+        | null
+        | undefined;
+      if (cancelled) return;
+      if (!templateId) {
+        setDefaultReengageTemplate(null);
+        return;
+      }
+      const { data: template } = await supabase
+        .from("message_templates")
+        .select("*")
+        .eq("id", templateId)
+        .eq("status", "APPROVED")
+        .maybeSingle();
+      if (!cancelled) setDefaultReengageTemplate((template as MessageTemplate) ?? null);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [accountId]);
 
   // 24-hour session timer
   const sessionInfo = useMemo(() => {
@@ -812,6 +857,31 @@ export function MessageThread({
     [conversation, onNewMessage, onUpdateMessage],
   );
 
+  // One-click send of the account's default re-engagement template
+  // (see the loading effect above) — falls back to the full picker
+  // when none is configured, or when it needs more than just the
+  // contact's name to fill in (nothing else to substitute automatically).
+  const handleQuickReengage = useCallback(async () => {
+    if (!defaultReengageTemplate) {
+      setTemplateModalOpen(true);
+      return;
+    }
+    const varCount = extractVariableIndices(defaultReengageTemplate.body_text).length;
+    if (varCount > 1) {
+      setTemplateModalOpen(true);
+      return;
+    }
+    setSendingReengage(true);
+    try {
+      const name = contact?.name || contact?.phone || "Customer";
+      await handleSendTemplate(defaultReengageTemplate, {
+        body: varCount === 1 ? [name] : [],
+      });
+    } finally {
+      setSendingReengage(false);
+    }
+  }, [defaultReengageTemplate, handleSendTemplate, contact]);
+
   // Build a quick id → Message map so reply quotes can be rendered without
   // an extra fetch — the thread already holds the full conversation.
   const messagesById = useMemo(() => {
@@ -1326,6 +1396,8 @@ export function MessageThread({
         onSend={handleSend}
         onSendMedia={handleSendMedia}
         onOpenTemplates={handleOpenTemplates}
+        onQuickReengage={defaultReengageTemplate ? handleQuickReengage : undefined}
+        sendingReengage={sendingReengage}
         replyTo={replyTo}
         onClearReply={() => setReplyTo(null)}
       />

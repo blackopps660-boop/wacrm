@@ -97,6 +97,11 @@ interface MessageComposerProps {
   onSend: (text: string, replyToId?: string) => void;
   onSendMedia: (payload: SendMediaPayload) => void;
   onOpenTemplates: () => void;
+  /** Sends the account's configured default template immediately —
+   *  omitted when no default is set, in which case the banner only
+   *  offers the full picker (unchanged prior behavior). */
+  onQuickReengage?: () => void;
+  sendingReengage?: boolean;
   replyTo?: ReplyDraft | null;
   onClearReply?: () => void;
 }
@@ -118,6 +123,8 @@ export function MessageComposer({
   onSend,
   onSendMedia,
   onOpenTemplates,
+  onQuickReengage,
+  sendingReengage,
   replyTo,
   onClearReply,
 }: MessageComposerProps) {
@@ -477,17 +484,33 @@ export function MessageComposer({
       {sessionExpired && (
         <div className="mb-2 flex items-center justify-between rounded-lg bg-amber-500/10 px-3 py-2">
           <p className="text-xs text-amber-400">
-            24-hour session expired. Use a template to re-engage.
+            24-hour session expired.{" "}
+            {onQuickReengage
+              ? "Send a follow-up template to re-open the conversation."
+              : "Use a template to re-engage."}
           </p>
-          <Button
-            variant="ghost"
-            size="sm"
-            className="h-7 text-xs text-amber-400 hover:text-amber-300"
-            onClick={onOpenTemplates}
-          >
-            <LayoutTemplate className="mr-1 h-3 w-3" />
-            Templates
-          </Button>
+          <div className="flex items-center gap-1">
+            {onQuickReengage && (
+              <Button
+                size="sm"
+                disabled={sendingReengage}
+                className="h-7 bg-amber-500 text-xs text-amber-950 hover:bg-amber-500/90"
+                onClick={onQuickReengage}
+              >
+                {sendingReengage && <Loader2 className="mr-1 h-3 w-3 animate-spin" />}
+                Send follow-up
+              </Button>
+            )}
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-7 text-xs text-amber-400 hover:text-amber-300"
+              onClick={onOpenTemplates}
+            >
+              <LayoutTemplate className="mr-1 h-3 w-3" />
+              {onQuickReengage ? "Other" : "Templates"}
+            </Button>
+          </div>
         </div>
       )}
 

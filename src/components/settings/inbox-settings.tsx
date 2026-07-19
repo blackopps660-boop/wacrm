@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
-import { Loader2, TimerReset } from "lucide-react";
+import { Loader2, TimerReset, MessageSquareReply } from "lucide-react";
 
 import { createClient } from "@/lib/supabase/client";
 import { useAuth } from "@/hooks/use-auth";
@@ -11,6 +11,13 @@ import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
   Card,
   CardContent,
   CardHeader,
@@ -18,6 +25,7 @@ import {
   CardDescription,
 } from "@/components/ui/card";
 import { SettingsPanelHead } from "./settings-panel-head";
+import type { MessageTemplate } from "@/types";
 
 /**
  * Inbox settings — per-workspace auto-close.
@@ -36,6 +44,14 @@ export function InboxSettings() {
   const [enabled, setEnabled] = useState(false);
   const [days, setDays] = useState(3);
 
+  // Quick re-engage — which Approved template the expired-session banner
+  // sends with one click. Loaded alongside auto-close since both live on
+  // the same accounts row; saved independently below since it has its
+  // own "no templates yet" empty state to handle.
+  const [templates, setTemplates] = useState<MessageTemplate[]>([]);
+  const [reengageTemplateId, setReengageTemplateId] = useState<string | null>(null);
+  const [savingReengage, setSavingReengage] = useState(false);
+
   const loadedAccountIdRef = useRef<string | null>(null);
 
   useEffect(() => {
@@ -44,11 +60,19 @@ export function InboxSettings() {
     let cancelled = false;
     (async () => {
       setLoading(true);
-      const { data, error } = await supabase
-        .from("accounts")
-        .select("auto_close_after_days")
-        .eq("id", accountId)
-        .maybeSingle();
+      const [{ data, error }, { data: templateRows }] = await Promise.all([
+        supabase
+          .from("accounts")
+          .select("auto_close_after_days, default_reengagement_template_id")
+          .eq("id", accountId)
+          .maybeSingle(),
+        supabase
+          .from("message_templates")
+          .select("*")
+          .eq("account_id", accountId)
+          .eq("status", "APPROVED")
+          .order("name"),
+      ]);
       if (cancelled) return;
       if (error) {
         toast.error("Failed to load inbox settings");
@@ -58,6 +82,10 @@ export function InboxSettings() {
       const value = data?.auto_close_after_days as number | null | undefined;
       setEnabled(value != null);
       if (value != null) setDays(value);
+      setReengageTemplateId(
+        (data?.default_reengagement_template_id as string | null) ?? null,
+      );
+      setTemplates((templateRows as MessageTemplate[]) ?? []);
       setLoading(false);
     })();
     return () => {
@@ -66,6 +94,22 @@ export function InboxSettings() {
   }, [accountId, supabase]);
 
   const disabled = !canEditSettings || saving || loading;
+
+  const handleSaveReengageTemplate = async (value: string | null) => {
+    if (!accountId) return;
+    setReengageTemplateId(value);
+    setSavingReengage(true);
+    const { error } = await supabase
+      .from("accounts")
+      .update({ default_reengagement_template_id: value })
+      .eq("id", accountId);
+    setSavingReengage(false);
+    if (error) {
+      toast.error("Failed to save quick re-engage template");
+      return;
+    }
+    toast.success(value ? "Quick re-engage template set" : "Quick re-engage turned off");
+  };
 
   const handleSave = async () => {
     if (!accountId) return;
@@ -164,6 +208,59 @@ export function InboxSettings() {
               Save
             </Button>
           </div>
+        </CardContent>
+      </Card>
+
+      <Card className="mt-4">
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2 text-base">
+            <MessageSquareReply className="h-4 w-4 text-primary" /> Quick
+            re-engage
+          </CardTitle>
+          <CardDescription>
+            When a conversation&apos;s 24-hour window has expired, the inbox
+            composer normally requires picking a template every time. Set one
+            Approved template here to send it in a single click instead —
+            useful for a plain check-in that only needs the contact&apos;s
+            name, if it uses a variable at all.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          {templates.length === 0 ? (
+            <p className="rounded-md border border-border bg-muted/40 px-3 py-2 text-sm text-muted-foreground">
+              No Approved templates yet — create one under Settings →
+              Templates first.
+            </p>
+          ) : (
+            <div className="flex items-center justify-between gap-4">
+              <div>
+                <Label>Template</Label>
+                <p className="text-xs text-muted-foreground">
+                  Off sends nobody a template automatically — the composer
+                  falls back to the full picker.
+                </p>
+              </div>
+              <Select
+                value={reengageTemplateId ?? "__none__"}
+                onValueChange={(v) =>
+                  handleSaveReengageTemplate(v === "__none__" ? null : v)
+                }
+                disabled={!canEditSettings || savingReengage}
+              >
+                <SelectTrigger className="w-56 bg-muted">
+                  <SelectValue placeholder="Off" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="__none__">Off</SelectItem>
+                  {templates.map((t) => (
+                    <SelectItem key={t.id} value={t.id}>
+                      {t.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          )}
         </CardContent>
       </Card>
     </div>
