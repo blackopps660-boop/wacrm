@@ -38,7 +38,8 @@ import {
   type PickedFile,
 } from '../../../lib/media';
 import { radius, scaleFontSizes, spacing, type Palette } from '../../../lib/theme';
-import type { Message, Contact, Conversation, ConversationOwnerKind, LifecycleStage } from '../../../lib/types';
+import type { Message, Contact, Conversation, ConversationOwnerKind, LifecycleStage, MessageTemplate } from '../../../lib/types';
+import { TemplatePicker, renderBodyPreview, extractVariableIndices } from '../../../components/TemplatePicker';
 
 interface TeamMember {
   user_id: string;
@@ -338,6 +339,14 @@ export default function MessageThreadScreen() {
   const [ownerKind, setOwnerKind] = useState<ConversationOwnerKind>('unassigned');
   const [teamMembers, setTeamMembers] = useState<TeamMember[] | null>(null);
   const [assignPickerOpen, setAssignPickerOpen] = useState(false);
+  const [templatePickerOpen, setTemplatePickerOpen] = useState(false);
+  // The account's one-click "quick re-engage" template (Settings →
+  // Inbox on the web app — no mobile settings screen for this yet, it
+  // just reads the same accounts row). Only usable automatically when
+  // it needs at most the contact's name as {{1}}; anything else falls
+  // back to the picker since there's nothing else to fill it in with.
+  const [defaultReengageTemplate, setDefaultReengageTemplate] = useState<MessageTemplate | null>(null);
+  const [sendingReengage, setSendingReengage] = useState(false);
   const listRef = useRef<FlatList<ListItem>>(null);
 
   // Land at the bottom (most recent message) whenever the thread first
@@ -453,6 +462,37 @@ export default function MessageThreadScreen() {
     void fetchContact();
     loadLifecycleStages(supabase).then(setStages).catch(console.error);
   }, [fetchMessages, fetchContact]);
+
+  // Account-wide quick-re-engage template — same accounts row the web
+  // Settings → Inbox screen writes to, loaded once per account rather
+  // than per-conversation.
+  useEffect(() => {
+    if (!accountId) return;
+    let cancelled = false;
+    (async () => {
+      const { data: acct } = await supabase
+        .from('accounts')
+        .select('default_reengagement_template_id')
+        .eq('id', accountId)
+        .maybeSingle();
+      const templateId = acct?.default_reengagement_template_id as string | null | undefined;
+      if (cancelled) return;
+      if (!templateId) {
+        setDefaultReengageTemplate(null);
+        return;
+      }
+      const { data: template } = await supabase
+        .from('message_templates')
+        .select('*')
+        .eq('id', templateId)
+        .eq('status', 'APPROVED')
+        .maybeSingle();
+      if (!cancelled) setDefaultReengageTemplate((template as MessageTemplate) ?? null);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [accountId]);
 
   // Marks this conversation as "the one on screen" only while it's the
   // focused route — tab screens stay mounted in the background in this
@@ -582,6 +622,68 @@ export default function MessageThreadScreen() {
       sendPlayer.play();
     } catch (err) {
       setSendError(err instanceof Error ? err.message : 'Failed to send message');
+    }
+  }
+
+  // Same 24-hour customer-service-window rule the web inbox enforces —
+  // Meta rejects a free-form send once this long has passed since the
+  // customer's last message, so the composer switches to template-only
+  // mode to match (see the banner in the render below).
+  const sessionExpired = useMemo(() => {
+    if (!messages.length) return false;
+    const lastCustomerMsg = [...messages].reverse().find((m) => m.sender_type === 'customer');
+    if (!lastCustomerMsg) return true;
+    const hoursSince = (Date.now() - new Date(lastCustomerMsg.created_at).getTime()) / 3600000;
+    return hoursSince >= 24;
+  }, [messages]);
+
+  async function handleSendTemplate(template: MessageTemplate, values: { body: string[] }) {
+    setSendError(null);
+    const renderedBody = renderBodyPreview(template.body_text, values.body);
+    try {
+      const res = await apiFetch('/api/whatsapp/send', {
+        method: 'POST',
+        body: JSON.stringify({
+          conversation_id: conversationId,
+          message_type: 'template',
+          template_name: template.name,
+          template_language: template.language,
+          template_message_params: { body: values.body },
+          template_params: values.body,
+          content_text: renderedBody,
+        }),
+      });
+      const body = await res.json();
+      if (!res.ok) {
+        setSendError(body.error || 'Failed to send template');
+        return;
+      }
+      sendPlayer.seekTo(0);
+      sendPlayer.play();
+    } catch (err) {
+      setSendError(err instanceof Error ? err.message : 'Failed to send template');
+    }
+  }
+
+  // One-click send of the account's default re-engagement template —
+  // falls back to opening the full picker when none is configured, or
+  // when it needs more than just the contact's name to fill in.
+  async function handleQuickReengage() {
+    if (!defaultReengageTemplate) {
+      setTemplatePickerOpen(true);
+      return;
+    }
+    const varCount = extractVariableIndices(defaultReengageTemplate.body_text).length;
+    if (varCount > 1) {
+      setTemplatePickerOpen(true);
+      return;
+    }
+    setSendingReengage(true);
+    try {
+      const name = contact?.name || contact?.phone || 'Customer';
+      await handleSendTemplate(defaultReengageTemplate, { body: varCount === 1 ? [name] : [] });
+    } finally {
+      setSendingReengage(false);
     }
   }
 
@@ -1161,6 +1263,33 @@ export default function MessageThreadScreen() {
         </View>
       )}
 
+      {sessionExpired && !contact?.blocked_at && (
+        <View style={styles.expiredBanner}>
+          <Text style={styles.expiredBannerText}>
+            24-hour session expired.{' '}
+            {defaultReengageTemplate ? 'Send a follow-up template to re-open.' : 'Use a template to re-engage.'}
+          </Text>
+          <View style={{ flexDirection: 'row', gap: spacing.xs }}>
+            {defaultReengageTemplate && (
+              <Pressable
+                style={[styles.expiredBannerButton, sendingReengage && { opacity: 0.6 }]}
+                onPress={handleQuickReengage}
+                disabled={sendingReengage}
+              >
+                {sendingReengage ? (
+                  <ActivityIndicator size="small" color="#1F1300" />
+                ) : (
+                  <Text style={styles.expiredBannerButtonText}>Send follow-up</Text>
+                )}
+              </Pressable>
+            )}
+            <Pressable style={styles.expiredBannerLink} onPress={() => setTemplatePickerOpen(true)}>
+              <Text style={styles.expiredBannerLinkText}>{defaultReengageTemplate ? 'Other' : 'Templates'}</Text>
+            </Pressable>
+          </View>
+        </View>
+      )}
+
       {!contact?.blocked_at && (
         <View style={styles.composer}>
           {isRecording && isLocked ? (
@@ -1212,7 +1341,12 @@ export default function MessageThreadScreen() {
             </View>
           ) : (
             <>
-              <Pressable style={styles.attachButton} onPress={() => setAttachOpen(true)} hitSlop={8} disabled={uploading}>
+              <Pressable
+                style={styles.attachButton}
+                onPress={() => setAttachOpen(true)}
+                hitSlop={8}
+                disabled={uploading || sessionExpired}
+              >
                 {uploading ? (
                   <ActivityIndicator size="small" color={colors.textFaint} />
                 ) : (
@@ -1221,13 +1355,14 @@ export default function MessageThreadScreen() {
               </Pressable>
               <TextInput
                 style={styles.composerInput}
-                placeholder="Type a message…"
+                placeholder={sessionExpired ? 'Session expired - use a template' : 'Type a message…'}
                 placeholderTextColor={colors.textFaint}
                 value={text}
                 onChangeText={setText}
+                editable={!sessionExpired}
                 multiline
               />
-              {text.trim() ? (
+              {sessionExpired ? null : text.trim() ? (
                 <Pressable
                   style={({ pressed }) => [styles.sendButton, pressed && styles.sendButtonPressed]}
                   onPress={handleSend}
@@ -1243,6 +1378,12 @@ export default function MessageThreadScreen() {
           )}
         </View>
       )}
+
+      <TemplatePicker
+        visible={templatePickerOpen}
+        onClose={() => setTemplatePickerOpen(false)}
+        onSelect={(template, values) => void handleSendTemplate(template, values)}
+      />
 
       {/* Attachment picker sheet */}
       <Modal visible={attachOpen} transparent animationType="fade" onRequestClose={() => setAttachOpen(false)}>
@@ -1653,6 +1794,25 @@ function makeStyles(colors: Palette) {
       paddingHorizontal: spacing.md,
     },
     errorBarText: { color: colors.dangerMuted, fontSize: 12 },
+    expiredBanner: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      gap: spacing.sm,
+      backgroundColor: 'rgba(245,158,11,0.12)',
+      paddingVertical: spacing.sm,
+      paddingHorizontal: spacing.md,
+    },
+    expiredBannerText: { flex: 1, color: '#F59E0B', fontSize: 12 },
+    expiredBannerButton: {
+      backgroundColor: '#F59E0B',
+      borderRadius: radius.sm,
+      paddingVertical: spacing.xs,
+      paddingHorizontal: spacing.sm,
+    },
+    expiredBannerButtonText: { color: '#1F1300', fontSize: 12, fontWeight: '600' },
+    expiredBannerLink: { paddingVertical: spacing.xs, paddingHorizontal: spacing.xs },
+    expiredBannerLinkText: { color: '#F59E0B', fontSize: 12, fontWeight: '600' },
     composer: {
       flexDirection: 'row',
       alignItems: 'flex-end',

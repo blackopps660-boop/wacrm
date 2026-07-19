@@ -79,6 +79,36 @@ export type ContentType =
   | 'interactive';
 export type MessageStatus = 'sending' | 'sent' | 'delivered' | 'read' | 'failed';
 
+export type MessageTemplateStatus =
+  | 'DRAFT'
+  | 'PENDING'
+  | 'APPROVED'
+  | 'REJECTED'
+  | 'PAUSED'
+  | 'DISABLED'
+  | 'IN_APPEAL'
+  | 'PENDING_DELETION';
+
+export type TemplateButton =
+  | { type: 'QUICK_REPLY'; text: string }
+  | { type: 'URL'; text: string; url: string; example?: string }
+  | { type: 'PHONE_NUMBER'; text: string; phone_number: string }
+  | { type: 'COPY_CODE'; text: string; example: string };
+
+export interface MessageTemplate {
+  id: string;
+  account_id: string;
+  name: string;
+  category: 'Marketing' | 'Utility' | 'Authentication';
+  language?: string;
+  header_type?: 'text' | 'image' | 'video' | 'document';
+  header_content?: string;
+  body_text: string;
+  footer_text?: string;
+  buttons?: TemplateButton[];
+  status?: MessageTemplateStatus;
+}
+
 export interface Message {
   id: string;
   conversation_id: string;
