@@ -839,53 +839,41 @@ export default function MessageThreadScreen() {
     }
   }
 
-  // Hold the mic to record, release to send — matches WhatsApp's own
-  // gesture. Slide up while holding to "lock" (keeps recording after
-  // you lift your finger, showing the same manual send/cancel row a
-  // locked recording already had). Slide left before releasing to
-  // cancel outright, same as WhatsApp's cancel gesture.
+  // Tap (or hold) the mic to start recording; it always locks into
+  // hands-free recording on release — sending only ever happens via an
+  // explicit tap on the dedicated send button in the locked row below.
+  // Slide left before releasing still cancels outright.
   //
-  // A quick, near-stationary tap (release almost immediately, barely
-  // any finger movement) is treated as "tap to record hands-free"
-  // rather than "hold and release to send" — it locks straight into
-  // the recording row instead of attempting to stop+send a near-zero-
-  // length clip (which used to hit the "recording too short" error
-  // path and is what made a plain tap feel broken). A real hold
-  // (finger down for a while, or moved) still sends on release exactly
-  // as before.
+  // This used to try to distinguish "quick tap" (lock) from "held and
+  // released" (send immediately, WhatsApp-style) using a <300ms timing
+  // heuristic. Confirmed on real Android hardware that the heuristic
+  // doesn't hold — a normal human tap routinely measures over 300ms by
+  // the time this callback sees it (touch dispatch + JS bridge
+  // latency), so releases kept falling through to finishRecording()
+  // with a near-zero-length clip, hitting the "recording too short"
+  // error instead of ever reaching the lockable state — reads exactly
+  // like "tap again to send" doing nothing. Dropping the ambiguity
+  // entirely — every non-cancel release locks — removes that whole
+  // class of timing bugs.
   //
   // Recreated each render (cheap) rather than memoized so its closures
   // never go stale — PanResponder callbacks otherwise capture whichever
   // `accountId`/`recorder` were current the one time it was created.
-  const pressStartRef = useRef(0);
   const micResponder = PanResponder.create({
     onStartShouldSetPanResponder: () => true,
     onPanResponderGrant: () => {
-      pressStartRef.current = Date.now();
       isHoldingRef.current = true;
       setIsHolding(true);
       void startRecording();
     },
-    onPanResponderMove: (_evt, gestureState) => {
-      if (!isLockedRef.current && gestureState.dy < -60) {
-        isLockedRef.current = true;
-        setIsLocked(true);
-      }
-    },
     onPanResponderRelease: (_evt, gestureState) => {
-      if (isLockedRef.current) return; // stays recording — user taps send/trash explicitly
+      if (isLockedRef.current) return; // already locked — stays recording
       if (gestureState.dx < -80) {
         void cancelRecording();
         return;
       }
-      const heldMs = Date.now() - pressStartRef.current;
-      const isTap = heldMs < 300 && Math.abs(gestureState.dx) < 10 && Math.abs(gestureState.dy) < 10;
-      if (isTap) {
-        isLockedRef.current = true;
-        setIsLocked(true);
-        return;
-      }
-      void finishRecording();
+      isLockedRef.current = true;
+      setIsLocked(true);
     },
     onPanResponderTerminate: () => {
       if (!isLockedRef.current) void cancelRecording();
@@ -1337,7 +1325,7 @@ export default function MessageThreadScreen() {
                   <Ionicons name="mic" size={19} color={colors.white} />
                 </View>
               </View>
-              <Text style={styles.recordingHintText}>◁ slide to cancel · slide up 🔒 to lock</Text>
+              <Text style={styles.recordingHintText}>◁ slide to cancel · release to keep recording</Text>
             </View>
           ) : (
             <>
