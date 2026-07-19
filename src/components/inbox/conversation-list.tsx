@@ -237,15 +237,25 @@ export function ConversationList({
   // calls (see its own loadingMore/hasMore check above), so it's safe to
   // fire this on every intersection without extra debouncing here.
   const sentinelRef = useRef<HTMLDivElement>(null);
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (!hasMore) return;
     const el = sentinelRef.current;
     if (!el) return;
+    // Base UI's ScrollArea scrolls its own Viewport div, not the document
+    // — an IntersectionObserver with the default root (the document
+    // viewport) never reports this sentinel as intersecting no matter how
+    // far the list is scrolled, since it's clipped by that inner
+    // scrollable ancestor rather than the page. Root must be that actual
+    // scrolling element for the observer to fire at all.
+    const root = scrollContainerRef.current?.querySelector<HTMLElement>(
+      '[data-slot="scroll-area-viewport"]',
+    );
     const observer = new IntersectionObserver(
       (entries) => {
         if (entries[0]?.isIntersecting) void loadMore();
       },
-      { rootMargin: "300px" },
+      { root, rootMargin: "300px" },
     );
     observer.observe(el);
     return () => observer.disconnect();
@@ -799,62 +809,64 @@ export function ConversationList({
           every conversation instead of shrinking to the remaining
           space — the list then overflows and gets clipped by the
           parent's overflow-hidden with no scrollbar (issue #229). */}
-      <ScrollArea className="min-h-0 flex-1">
-        {loading ? (
-          <div className="flex items-center justify-center py-12">
-            <div className="h-5 w-5 animate-spin rounded-full border-2 border-primary border-t-transparent" />
-          </div>
-        ) : filtered.length === 0 ? (
-          <div className="px-4 py-12 text-center">
-            <p className="text-sm text-muted-foreground">
-              {ownerFilter === "mine"
-                ? "No conversations assigned to you"
-                : ownerFilter === "unassigned"
-                  ? "Nothing unassigned right now"
-                  : section === "closed"
-                    ? "No closed conversations"
-                    : "No conversations found"}
-            </p>
-          </div>
-        ) : (
-          <div className="flex flex-col divide-y divide-border/50">
-            {filtered.map((conv) => (
-              <ConversationItem
-                key={conv.id}
-                conversation={conv}
-                isActive={conv.id === activeConversationId}
-                onSelect={handleSelect}
-              />
-            ))}
-          </div>
-        )}
-        {/* Only the most recent PAGE_SIZE conversations load up front
-            (issue: unbounded inbox load time as history accumulates).
-            Older pages auto-load as this sentinel scrolls into view (see
-            the IntersectionObserver effect above); the button underneath
-            is a visible fallback for the brief moment before that fires,
-            and while a page is in flight. */}
-        {!loading && hasMore && (
-          <div ref={sentinelRef} className="p-3">
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={loadMore}
-              disabled={loadingMore}
-              className="w-full border-border text-muted-foreground hover:bg-muted"
-            >
-              {loadingMore ? (
-                <>
-                  <Loader2 className="size-3.5 animate-spin" />
-                  Loading…
-                </>
-              ) : (
-                "Load older conversations"
-              )}
-            </Button>
-          </div>
-        )}
-      </ScrollArea>
+      <div ref={scrollContainerRef} className="contents">
+        <ScrollArea className="min-h-0 flex-1">
+          {loading ? (
+            <div className="flex items-center justify-center py-12">
+              <div className="h-5 w-5 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+            </div>
+          ) : filtered.length === 0 ? (
+            <div className="px-4 py-12 text-center">
+              <p className="text-sm text-muted-foreground">
+                {ownerFilter === "mine"
+                  ? "No conversations assigned to you"
+                  : ownerFilter === "unassigned"
+                    ? "Nothing unassigned right now"
+                    : section === "closed"
+                      ? "No closed conversations"
+                      : "No conversations found"}
+              </p>
+            </div>
+          ) : (
+            <div className="flex flex-col divide-y divide-border/50">
+              {filtered.map((conv) => (
+                <ConversationItem
+                  key={conv.id}
+                  conversation={conv}
+                  isActive={conv.id === activeConversationId}
+                  onSelect={handleSelect}
+                />
+              ))}
+            </div>
+          )}
+          {/* Only the most recent PAGE_SIZE conversations load up front
+              (issue: unbounded inbox load time as history accumulates).
+              Older pages auto-load as this sentinel scrolls into view (see
+              the IntersectionObserver effect above); the button underneath
+              is a visible fallback for the brief moment before that fires,
+              and while a page is in flight. */}
+          {!loading && hasMore && (
+            <div ref={sentinelRef} className="p-3">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={loadMore}
+                disabled={loadingMore}
+                className="w-full border-border text-muted-foreground hover:bg-muted"
+              >
+                {loadingMore ? (
+                  <>
+                    <Loader2 className="size-3.5 animate-spin" />
+                    Loading…
+                  </>
+                ) : (
+                  "Load older conversations"
+                )}
+              </Button>
+            </div>
+          )}
+        </ScrollArea>
+      </div>
     </div>
   );
 }
