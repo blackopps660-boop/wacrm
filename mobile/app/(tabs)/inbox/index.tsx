@@ -185,6 +185,15 @@ export default function InboxListScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [actionTarget, setActionTarget] = useState<Conversation | null>(null);
   const refetchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Pagination — the initial fetch only pulls the most recent PAGE_SIZE
+  // conversations (unbounded load time otherwise, same rationale as the
+  // web inbox). Older ones load in via onEndReached rather than an
+  // explicit button — at real scale (a few hundred conversations) an
+  // account with no next-page affordance at all just read as "most of
+  // my chats are missing" once someone scrolled past the 30th row.
+  const cursorRef = useRef<string | null>(null);
+  const [hasMore, setHasMore] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
 
   // Debounced the same way Contacts' search already does — filtering the
   // FlatList's data on every single keystroke while it also has
@@ -195,6 +204,25 @@ export default function InboxListScreen() {
     const timer = setTimeout(() => setSearch(searchInput.trim()), SEARCH_DEBOUNCE_MS);
     return () => clearTimeout(timer);
   }, [searchInput]);
+
+  // Flattens the embedded contact_tags(tags(*)) join onto contact.tags —
+  // same shape as web's normalizeConversation (src/lib/inbox/conversations.ts).
+  function normalizeRows(data: unknown): Conversation[] {
+    type RawRow = Conversation & {
+      contact?: (Conversation['contact'] & { contact_tags?: { tags: Tag | null }[] }) | null;
+    };
+    return ((data as RawRow[]) ?? []).map((row) => {
+      if (!row.contact) return row as Conversation;
+      const { contact_tags, ...contact } = row.contact;
+      return {
+        ...row,
+        contact: {
+          ...contact,
+          tags: (contact_tags ?? []).map((ct) => ct.tags).filter((t): t is Tag => t != null),
+        },
+      } as Conversation;
+    });
+  }
 
   const fetchConversations = useCallback(async () => {
     const { data, error } = await supabase
@@ -207,25 +235,38 @@ export default function InboxListScreen() {
       console.error('[Inbox] fetch conversations error:', error.message);
       return;
     }
-    // Flatten the embedded contact_tags(tags(*)) join onto
-    // contact.tags — same shape as web's normalizeConversation
-    // (src/lib/inbox/conversations.ts).
-    type RawRow = Conversation & {
-      contact?: (Conversation['contact'] & { contact_tags?: { tags: Tag | null }[] }) | null;
-    };
-    const rows = ((data as unknown as RawRow[]) ?? []).map((row) => {
-      if (!row.contact) return row as Conversation;
-      const { contact_tags, ...contact } = row.contact;
-      return {
-        ...row,
-        contact: {
-          ...contact,
-          tags: (contact_tags ?? []).map((ct) => ct.tags).filter((t): t is Tag => t != null),
-        },
-      } as Conversation;
-    });
+    const rows = normalizeRows(data);
+    cursorRef.current = rows.length > 0 ? (rows[rows.length - 1].last_message_at ?? null) : null;
+    setHasMore(rows.length === PAGE_SIZE);
     setConversations(rows);
   }, []);
+
+  const loadMore = useCallback(async () => {
+    if (loadingMore || !hasMore || !cursorRef.current) return;
+    setLoadingMore(true);
+    try {
+      const { data, error } = await supabase
+        .from('conversations')
+        .select(CONVERSATION_SELECT)
+        .order('last_message_at', { ascending: false })
+        .lt('last_message_at', cursorRef.current)
+        .limit(PAGE_SIZE);
+      if (error) {
+        console.error('[Inbox] load more conversations error:', error.message);
+        return;
+      }
+      const rows = normalizeRows(data);
+      cursorRef.current =
+        rows.length > 0 ? (rows[rows.length - 1].last_message_at ?? cursorRef.current) : cursorRef.current;
+      setHasMore(rows.length === PAGE_SIZE);
+      setConversations((prev) => {
+        const seen = new Set(prev.map((c) => c.id));
+        return [...prev, ...rows.filter((c) => !seen.has(c.id))];
+      });
+    } finally {
+      setLoadingMore(false);
+    }
+  }, [loadingMore, hasMore]);
 
   // `accountId` dependency so switching workspace (Phase 4) re-fetches
   // under the new account — tab screens stay mounted across
@@ -491,6 +532,15 @@ export default function InboxListScreen() {
         maxToRenderPerBatch={12}
         windowSize={7}
         removeClippedSubviews
+        onEndReached={() => void loadMore()}
+        onEndReachedThreshold={0.5}
+        ListFooterComponent={
+          loadingMore ? (
+            <View style={{ paddingVertical: spacing.lg }}>
+              <ActivityIndicator color={colors.accent} />
+            </View>
+          ) : null
+        }
       />
 
       {/* Long-press action sheet — pin/mute/archive */}

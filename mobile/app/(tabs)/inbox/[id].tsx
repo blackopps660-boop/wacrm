@@ -11,7 +11,6 @@ import {
   Platform,
   Modal,
   Linking,
-  PanResponder,
   Animated,
 } from 'react-native';
 import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
@@ -375,16 +374,13 @@ export default function MessageThreadScreen() {
   const receivePlayer = useAudioPlayer(receiveSound);
   const recorder = useAudioRecorder({ ...RecordingPresets.HIGH_QUALITY, isMeteringEnabled: true });
   const recorderState = useAudioRecorderState(recorder, 100);
-  const [isLocked, setIsLocked] = useState(false);
-  const isLockedRef = useRef(false);
-  // Reflects touch-down immediately, before the async permission-check +
+  // Reflects the mic tap immediately, before the async permission-check +
   // prepareToRecordAsync() + record() chain resolves (that chain can take
   // 100-300ms on real Android hardware) — without this, the composer
   // waited for the native recorder to actually confirm it was recording
-  // before showing anything, which is what made the gesture feel
-  // laggy/"weird". Combined with recorderState.isRecording below so the
-  // UI shows instantly on touch and only fully clears once the native
-  // recorder has actually stopped.
+  // before showing anything, which read as laggy. Combined with
+  // recorderState.isRecording below so the UI shows instantly on tap and
+  // only fully clears once the native recorder has actually stopped.
   const [isHolding, setIsHolding] = useState(false);
   const isHoldingRef = useRef(false);
   // Guards finishRecording/cancelRecording against reentrancy — e.g. a
@@ -519,8 +515,6 @@ export default function MessageThreadScreen() {
         if (isRecordingRef.current || isHoldingRef.current) {
           isHoldingRef.current = false;
           setIsHolding(false);
-          isLockedRef.current = false;
-          setIsLocked(false);
           recorder.stop().catch(() => {});
         }
       };
@@ -768,7 +762,19 @@ export default function MessageThreadScreen() {
     }
   }
 
+  // Tap the mic to start recording (hands-free — no hold, no gesture),
+  // tap the same-slot button again to stop and send. Previous versions
+  // of this tried a hold-to-record / slide-to-lock / release-timing
+  // gesture (WhatsApp-style) built on PanResponder; confirmed on real
+  // Android hardware that PanResponder's touch-responder negotiation
+  // was itself unreliable here (some taps just never fired
+  // onPanResponderGrant at all, needing 2-4 attempts before one
+  // registered) independent of anything in this file's own logic.
+  // Plain Pressable.onPress doesn't negotiate a gesture responder at
+  // all, so there's nothing left to lose that race.
   async function startRecording() {
+    isHoldingRef.current = true;
+    setIsHolding(true);
     const permission = await requestRecordingPermissionsAsync();
     if (!permission.granted) {
       setSendError('Microphone access is required to record a voice message.');
@@ -777,8 +783,6 @@ export default function MessageThreadScreen() {
       return;
     }
     setSendError(null);
-    isLockedRef.current = false;
-    setIsLocked(false);
     await recorder.prepareToRecordAsync();
     recorder.record();
   }
@@ -788,8 +792,6 @@ export default function MessageThreadScreen() {
     isFinishingVoiceRef.current = true;
     isHoldingRef.current = false;
     setIsHolding(false);
-    isLockedRef.current = false;
-    setIsLocked(false);
     await recorder.stop().catch(() => {});
     isFinishingVoiceRef.current = false;
   }
@@ -802,8 +804,6 @@ export default function MessageThreadScreen() {
     setIsFinishingVoice(true);
     isHoldingRef.current = false;
     setIsHolding(false);
-    isLockedRef.current = false;
-    setIsLocked(false);
     try {
       // recorder.stop() bridges to Android's MediaRecorder.stop(), which
       // throws IllegalStateException on a very short/invalid recording
@@ -838,47 +838,6 @@ export default function MessageThreadScreen() {
       setIsFinishingVoice(false);
     }
   }
-
-  // Tap (or hold) the mic to start recording; it always locks into
-  // hands-free recording on release — sending only ever happens via an
-  // explicit tap on the dedicated send button in the locked row below.
-  // Slide left before releasing still cancels outright.
-  //
-  // This used to try to distinguish "quick tap" (lock) from "held and
-  // released" (send immediately, WhatsApp-style) using a <300ms timing
-  // heuristic. Confirmed on real Android hardware that the heuristic
-  // doesn't hold — a normal human tap routinely measures over 300ms by
-  // the time this callback sees it (touch dispatch + JS bridge
-  // latency), so releases kept falling through to finishRecording()
-  // with a near-zero-length clip, hitting the "recording too short"
-  // error instead of ever reaching the lockable state — reads exactly
-  // like "tap again to send" doing nothing. Dropping the ambiguity
-  // entirely — every non-cancel release locks — removes that whole
-  // class of timing bugs.
-  //
-  // Recreated each render (cheap) rather than memoized so its closures
-  // never go stale — PanResponder callbacks otherwise capture whichever
-  // `accountId`/`recorder` were current the one time it was created.
-  const micResponder = PanResponder.create({
-    onStartShouldSetPanResponder: () => true,
-    onPanResponderGrant: () => {
-      isHoldingRef.current = true;
-      setIsHolding(true);
-      void startRecording();
-    },
-    onPanResponderRelease: (_evt, gestureState) => {
-      if (isLockedRef.current) return; // already locked — stays recording
-      if (gestureState.dx < -80) {
-        void cancelRecording();
-        return;
-      }
-      isLockedRef.current = true;
-      setIsLocked(true);
-    },
-    onPanResponderTerminate: () => {
-      if (!isLockedRef.current) void cancelRecording();
-    },
-  });
 
   async function handleChangeStage(stage: LifecycleStage | null) {
     if (!contact) return;
@@ -1280,10 +1239,10 @@ export default function MessageThreadScreen() {
 
       {!contact?.blocked_at && (
         <View style={styles.composer}>
-          {isRecording && isLocked ? (
-            // Locked — recording continues hands-free; explicit tap
-            // required to send or cancel (same as a locked recording
-            // in WhatsApp).
+          {isRecording ? (
+            // Hands-free from the moment it starts — tap the trash icon
+            // to discard, tap the checkmark to stop and send. No hold,
+            // no slide, nothing gesture-based left to misfire.
             <View style={styles.recordingRow}>
               <Pressable
                 onPress={cancelRecording}
@@ -1306,26 +1265,9 @@ export default function MessageThreadScreen() {
                 {isFinishingVoice ? (
                   <ActivityIndicator size="small" color={colors.white} />
                 ) : (
-                  <Ionicons name="send" size={17} color={colors.white} />
+                  <Ionicons name="checkmark" size={20} color={colors.white} />
                 )}
               </Pressable>
-            </View>
-          ) : isRecording ? (
-            // Actively held — releasing sends, sliding left cancels,
-            // sliding up locks (handled by micResponder below). The mic
-            // button itself stays in the same place under the finger.
-            <View style={styles.recordingHeldWrap}>
-              <View style={styles.recordingRow}>
-                <View style={styles.recordingDot} />
-                <Text style={styles.recordingTime}>
-                  {Math.floor(recordSeconds / 60)}:{(recordSeconds % 60).toString().padStart(2, '0')}
-                </Text>
-                <RecordingWaveform metering={recorderState.metering} colors={colors} />
-                <View style={[styles.sendButton, styles.micButtonHeld]} {...micResponder.panHandlers}>
-                  <Ionicons name="mic" size={19} color={colors.white} />
-                </View>
-              </View>
-              <Text style={styles.recordingHintText}>◁ slide to cancel · release to keep recording</Text>
             </View>
           ) : (
             <>
@@ -1358,9 +1300,13 @@ export default function MessageThreadScreen() {
                   <Ionicons name="send" size={17} color={colors.white} />
                 </Pressable>
               ) : (
-                <View style={styles.sendButton} {...micResponder.panHandlers}>
+                <Pressable
+                  style={({ pressed }) => [styles.sendButton, pressed && styles.sendButtonPressed]}
+                  onPress={startRecording}
+                  disabled={sessionExpired}
+                >
                   <Ionicons name="mic" size={19} color={colors.white} />
-                </View>
+                </Pressable>
               )}
             </>
           )}
@@ -1837,9 +1783,6 @@ function makeStyles(colors: Palette) {
     recordingCancel: { padding: 4 },
     recordingDot: { width: 10, height: 10, borderRadius: 5, backgroundColor: colors.danger },
     recordingTime: { color: colors.textSecondary, fontSize: 14, fontVariant: ['tabular-nums'] },
-    recordingHeldWrap: { flex: 1, gap: 2 },
-    recordingHintText: { color: colors.textFaint, fontSize: 11, textAlign: 'center' },
-    micButtonHeld: { transform: [{ scale: 1.08 }] },
     mediaImage: { width: 220, height: 220, borderRadius: radius.sm },
     videoCard: {
       flexDirection: 'row',
