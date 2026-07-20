@@ -80,6 +80,19 @@ const FILTER_OPTIONS: { label: string; value: InboxFilter }[] = [
 
 type InboxSection = "active" | "closed" | "archived";
 
+// Shape returned by the get_inbox_counts RPC (migrations 054/055).
+interface InboxCounts {
+  all: number;
+  active: number;
+  unread: number;
+  open: number;
+  pending: number;
+  closed: number;
+  archived: number;
+  stages: Record<string, number>;
+  tags: Record<string, number>;
+}
+
 // Who owns the conversation, orthogonal to Active/Closed — "Mine" is
 // scoped to the logged-in agent's own assignments, "Unassigned" surfaces
 // what nobody (human or AI) has picked up yet. Mirrors respond.io's
@@ -93,7 +106,7 @@ export function ConversationList({
   onConversationsLoaded,
   resyncToken = 0,
 }: ConversationListProps) {
-  const { user } = useAuth();
+  const { user, accountId } = useAuth();
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState<InboxFilter>("all");
   const [section, setSection] = useState<InboxSection>("active");
@@ -109,8 +122,7 @@ export function ConversationList({
   // pipeline that the Active section still relies on unchanged.
   const [sectionRows, setSectionRows] = useState<Conversation[]>([]);
   const [sectionLoading, setSectionLoading] = useState(false);
-  const [archivedCount, setArchivedCount] = useState(0);
-  const [closedCountAccurate, setClosedCountAccurate] = useState(0);
+  const [counts, setCounts] = useState<InboxCounts | null>(null);
   const [ownerFilter, setOwnerFilter] = useState<OwnerFilter>("all");
   const [loading, setLoading] = useState(true);
   // Contact-based filters (issue #272). Tags use OR logic (a conversation
@@ -370,41 +382,44 @@ export function ConversationList({
     };
   }, [section]);
 
-  // Tab badge counts — a real count query rather than "however many
-  // happen to be in the loaded page", for the same reason as above.
+  // Tab/filter/chip counts — one real aggregate RPC (get_inbox_counts,
+  // migration 054/055) instead of counting over whatever page happened
+  // to be loaded client-side. That client-side approach (still used for
+  // mineCount/unassignedCount below, a smaller concern) is what made
+  // Stage/Tag chip counts flicker between reloads — the "loaded page" is
+  // a shifting most-recent-N window, not a stable total, so a count over
+  // it changes every time new messages shift what's in that window.
   useEffect(() => {
+    if (!accountId) return;
     let cancelled = false;
     (async () => {
       const supabase = createClient();
-      const [{ count: archived }, { count: closed }] = await Promise.all([
-        supabase
-          .from("conversations")
-          .select("id", { count: "exact", head: true })
-          .not("archived_at", "is", null),
-        supabase
-          .from("conversations")
-          .select("id", { count: "exact", head: true })
-          .eq("status", "closed")
-          .is("archived_at", null),
-      ]);
+      const { data, error } = await supabase.rpc("get_inbox_counts", {
+        p_account_id: accountId,
+      });
       if (cancelled) return;
-      setArchivedCount(archived ?? 0);
-      setClosedCountAccurate(closed ?? 0);
+      if (error) {
+        console.error("Failed to fetch inbox counts:", error.message);
+        return;
+      }
+      setCounts(data as InboxCounts | null);
     })();
     return () => {
       cancelled = true;
     };
-  }, [resyncToken]);
+  }, [accountId, resyncToken]);
 
   const sectioned = useMemo(() => {
     if (section === "closed" || section === "archived") return sectionRows;
     return conversations.filter((c) => c.status !== "closed" && !c.archived_at);
   }, [conversations, section, sectionRows]);
 
-  const activeCount = useMemo(
-    () => conversations.filter((c) => c.status !== "closed" && !c.archived_at).length,
-    [conversations]
-  );
+  const sectionAllCount =
+    section === "closed"
+      ? (counts?.closed ?? 0)
+      : section === "archived"
+        ? (counts?.archived ?? 0)
+        : (counts?.active ?? 0);
 
   // Mine/Unassigned counts are scoped to the current section (Active or
   // Closed) so the number next to each pill matches what clicking it
@@ -516,9 +531,9 @@ export function ConversationList({
           )}
         >
           Active
-          {activeCount > 0 && (
+          {!!counts?.active && (
             <span className="ml-1.5 text-xs text-muted-foreground">
-              {activeCount}
+              {counts.active}
             </span>
           )}
         </button>
@@ -532,9 +547,9 @@ export function ConversationList({
           )}
         >
           Closed
-          {closedCountAccurate > 0 && (
+          {!!counts?.closed && (
             <span className="ml-1.5 text-xs text-muted-foreground">
-              {closedCountAccurate}
+              {counts.closed}
             </span>
           )}
         </button>
@@ -548,9 +563,9 @@ export function ConversationList({
           )}
         >
           Archived
-          {archivedCount > 0 && (
+          {!!counts?.archived && (
             <span className="ml-1.5 text-xs text-muted-foreground">
-              {archivedCount}
+              {counts.archived}
             </span>
           )}
         </button>
@@ -626,13 +641,17 @@ export function ConversationList({
               )}
             >
               All
-              <span className="ml-1 opacity-80">{sectioned.length}</span>
+              <span className="ml-1 opacity-80">{sectionAllCount}</span>
             </button>
             {stages.map((stage) => {
               const isSelected = selectedStageId === stage.id;
-              const count = sectioned.filter(
-                (c) => c.contact?.lifecycle_stage_id === stage.id
-              ).length;
+              // Pipeline-wide (non-archived, any status) rather than
+              // scoped to the current section — same number whichever
+              // tab is open, trading a minor semantic mismatch (this
+              // technically includes Closed conversations even while
+              // viewing Archived) for a count that's always stable and
+              // never flickers between reloads.
+              const count = counts?.stages[stage.id] ?? 0;
               return (
                 <button
                   key={stage.id}
@@ -686,14 +705,12 @@ export function ConversationList({
               )}
             >
               All
-              <span className="ml-1 opacity-80">{sectioned.length}</span>
+              <span className="ml-1 opacity-80">{sectionAllCount}</span>
             </button>
             {tags.map((t) => {
               const isSelected =
                 selectedTagIds.length === 1 && selectedTagIds[0] === t.id;
-              const count = sectioned.filter((c) =>
-                matchesContactFilters(c, { tagIds: [t.id], company: null })
-              ).length;
+              const count = counts?.tags[t.id] ?? 0;
               return (
                 <button
                   key={t.id}
@@ -744,26 +761,53 @@ export function ConversationList({
             <DropdownMenu>
               <DropdownMenuTrigger className="inline-flex items-center justify-center h-7 gap-1 px-2 text-xs text-muted-foreground hover:text-foreground rounded-md hover:bg-muted">
                   {activeFilter?.label ?? "All"}
+                  {!!sectionAllCount && filter === "all" && (
+                    <span className="opacity-70">{sectionAllCount}</span>
+                  )}
+                  {filter === "unread" && !!counts?.unread && (
+                    <span className="opacity-70">{counts.unread}</span>
+                  )}
+                  {filter === "open" && !!counts?.open && (
+                    <span className="opacity-70">{counts.open}</span>
+                  )}
+                  {filter === "pending" && !!counts?.pending && (
+                    <span className="opacity-70">{counts.pending}</span>
+                  )}
                   <ChevronDown className="h-3 w-3" />
               </DropdownMenuTrigger>
               <DropdownMenuContent
                 align="start"
                 className="border-border bg-popover"
               >
-                {FILTER_OPTIONS.map((opt) => (
-                  <DropdownMenuItem
-                    key={opt.value}
-                    onClick={() => setFilter(opt.value)}
-                    className={cn(
-                      "text-sm",
-                      filter === opt.value
-                        ? "text-primary"
-                        : "text-popover-foreground"
-                    )}
-                  >
-                    {opt.label}
-                  </DropdownMenuItem>
-                ))}
+                {FILTER_OPTIONS.map((opt) => {
+                  const optCount =
+                    opt.value === "all"
+                      ? counts?.active
+                      : opt.value === "unread"
+                        ? counts?.unread
+                        : opt.value === "open"
+                          ? counts?.open
+                          : opt.value === "pending"
+                            ? counts?.pending
+                            : undefined;
+                  return (
+                    <DropdownMenuItem
+                      key={opt.value}
+                      onClick={() => setFilter(opt.value)}
+                      className={cn(
+                        "flex items-center justify-between gap-3 text-sm",
+                        filter === opt.value
+                          ? "text-primary"
+                          : "text-popover-foreground"
+                      )}
+                    >
+                      {opt.label}
+                      {!!optCount && (
+                        <span className="text-xs opacity-60">{optCount}</span>
+                      )}
+                    </DropdownMenuItem>
+                  );
+                })}
               </DropdownMenuContent>
             </DropdownMenu>
           )}

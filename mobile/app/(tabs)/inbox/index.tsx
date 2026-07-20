@@ -34,6 +34,24 @@ const SEARCH_DEBOUNCE_MS = 350;
 const CONVERSATION_SELECT =
   '*, contact:contacts(*, lifecycle_stage:lifecycle_stages(*), contact_tags(tags(*)))';
 
+// Shape returned by the get_inbox_counts RPC (supabase/migrations 054/055)
+// — the same one the web inbox uses. A real aggregate query rather than
+// counting over whatever page of `conversations` happened to be loaded
+// client-side; that approach is what made chip counts show a different
+// number on every reload (the loaded page is a shifting most-recent-N
+// window, not a stable total).
+interface InboxCounts {
+  all: number;
+  active: number;
+  unread: number;
+  open: number;
+  pending: number;
+  closed: number;
+  archived: number;
+  stages: Record<string, number>;
+  tags: Record<string, number>;
+}
+
 type StatusTabValue = 'all' | 'unread' | ConversationStatus;
 const STATUS_TABS: { value: StatusTabValue; label: string }[] = [
   { value: 'all', label: 'All' },
@@ -181,7 +199,7 @@ export default function InboxListScreen() {
   const [tags, setTags] = useState<Tag[]>([]);
   const [selectedTagId, setSelectedTagId] = useState<string | null>(null);
   const [statusFilter, setStatusFilter] = useState<StatusTabValue>('all');
-  const [archivedCount, setArchivedCount] = useState(0);
+  const [counts, setCounts] = useState<InboxCounts | null>(null);
   const [searchInput, setSearchInput] = useState('');
   const [search, setSearch] = useState('');
   const [loading, setLoading] = useState(true);
@@ -295,20 +313,22 @@ export default function InboxListScreen() {
     }
   }, [loadingMore, hasMore, statusFilter]);
 
-  // Archived count — deliberately its own lightweight query rather than
-  // derived from `conversations` (the paginated, status-scoped page
-  // above). An archived conversation is almost always stale (that's why
-  // it got archived), so it routinely falls outside that page after any
-  // refetch — the "Archived" row would show right after archiving
-  // something, then silently vanish on the next pull-to-refresh. A
-  // head:true count is cheap enough to just always be accurate.
-  const fetchArchivedCount = useCallback(async () => {
+  // All tab/chip counts — one real aggregate RPC rather than deriving
+  // any of them from `conversations` (the paginated, status-scoped page
+  // above). A stale (e.g. archived) conversation routinely falls outside
+  // that page after any refetch, and a client-side count over a shifting
+  // most-recent-N window isn't a stable total to begin with — it changes
+  // every time new messages shift what's in that window.
+  const fetchCounts = useCallback(async () => {
     if (!accountId) return;
-    const { count } = await supabase
-      .from('conversations')
-      .select('id', { count: 'exact', head: true })
-      .not('archived_at', 'is', null);
-    setArchivedCount(count ?? 0);
+    const { data, error } = await supabase.rpc('get_inbox_counts', {
+      p_account_id: accountId,
+    });
+    if (error) {
+      console.error('[Inbox] fetch counts error:', error.message);
+      return;
+    }
+    setCounts(data as InboxCounts | null);
   }, [accountId]);
 
   // `accountId` dependency so switching workspace (Phase 4) re-fetches
@@ -317,10 +337,10 @@ export default function InboxListScreen() {
   useEffect(() => {
     setLoading(true);
     fetchConversations().finally(() => setLoading(false));
-    fetchArchivedCount();
+    fetchCounts();
     loadLifecycleStages(supabase).then(setStages).catch(console.error);
     loadTags(supabase).then(setTags).catch(console.error);
-  }, [fetchConversations, fetchArchivedCount, accountId]);
+  }, [fetchConversations, fetchCounts, accountId]);
 
   // Live updates while the list is open. A burst of several messages
   // arriving together (common right after connecting a number) would
@@ -330,9 +350,9 @@ export default function InboxListScreen() {
     if (refetchTimer.current) clearTimeout(refetchTimer.current);
     refetchTimer.current = setTimeout(() => {
       fetchConversations();
-      fetchArchivedCount();
+      fetchCounts();
     }, 400);
-  }, [fetchConversations, fetchArchivedCount]);
+  }, [fetchConversations, fetchCounts]);
 
   useEffect(() => {
     return () => {
@@ -357,7 +377,7 @@ export default function InboxListScreen() {
 
   async function onRefresh() {
     setRefreshing(true);
-    await Promise.all([fetchConversations(), fetchArchivedCount()]);
+    await Promise.all([fetchConversations(), fetchCounts()]);
     setRefreshing(false);
   }
 
@@ -402,8 +422,8 @@ export default function InboxListScreen() {
     // archived_at IS NULL) list outright rather than just flagging it,
     // since it no longer belongs in the current query's result set.
     setConversations((prev) => (next ? prev.filter((c) => c.id !== item.id) : prev));
-    setArchivedCount((prev) => Math.max(0, prev + (next ? 1 : -1)));
     await supabase.from('conversations').update({ archived_at: next }).eq('id', item.id);
+    fetchCounts();
   }
 
   // Client-side — the list is already small (PAGE_SIZE=30, realtime-
@@ -443,28 +463,6 @@ export default function InboxListScreen() {
     return [...pinned, ...rest];
   }, [conversations, statusFilter, selectedStageId, selectedTagId, search]);
 
-  // How many currently-loaded conversations sit in each stage/tag —
-  // same client-side-over-the-loaded-page approach as the web inbox
-  // sidebar (src/components/inbox/conversation-list.tsx), so a chip
-  // reads "New Lead 49" instead of just "New Lead".
-  const stageCounts = useMemo(() => {
-    const counts = new Map<string, number>();
-    for (const c of conversations) {
-      const id = c.contact?.lifecycle_stage_id;
-      if (id) counts.set(id, (counts.get(id) ?? 0) + 1);
-    }
-    return counts;
-  }, [conversations]);
-  const tagCounts = useMemo(() => {
-    const counts = new Map<string, number>();
-    for (const c of conversations) {
-      for (const t of c.contact?.tags ?? []) {
-        counts.set(t.id, (counts.get(t.id) ?? 0) + 1);
-      }
-    }
-    return counts;
-  }, [conversations]);
-
   // Only the very first load (nothing on screen yet) blocks with a
   // full-screen spinner. Switching status tabs re-triggers `loading`
   // too (fetchConversations depends on statusFilter), but by then rows
@@ -484,13 +482,17 @@ export default function InboxListScreen() {
       <View style={styles.statusTabs}>
         {STATUS_TABS.map((tab) => {
           const active = statusFilter === tab.value;
+          const count = counts?.[tab.value as keyof InboxCounts] as number | undefined;
           return (
             <Pressable
               key={tab.value}
               onPress={() => setStatusFilter(tab.value)}
               style={[styles.statusTab, active && styles.statusTabActive]}
             >
-              <Text style={[styles.statusTabText, active && styles.statusTabTextActive]}>{tab.label}</Text>
+              <Text style={[styles.statusTabText, active && styles.statusTabTextActive]}>
+                {tab.label}
+                {!!count && `  ${count}`}
+              </Text>
             </Pressable>
           );
         })}
@@ -528,7 +530,7 @@ export default function InboxListScreen() {
             contentContainerStyle={{ gap: spacing.sm, paddingHorizontal: spacing.lg }}
             renderItem={({ item }) => {
               const active = selectedStageId === item.id;
-              const count = stageCounts.get(item.id) ?? 0;
+              const count = counts?.stages[item.id] ?? 0;
               return (
                 <Pressable
                   onPress={() => setSelectedStageId(active ? null : item.id)}
@@ -562,7 +564,7 @@ export default function InboxListScreen() {
             contentContainerStyle={{ gap: spacing.sm, paddingHorizontal: spacing.lg }}
             renderItem={({ item }) => {
               const active = selectedTagId === item.id;
-              const count = tagCounts.get(item.id) ?? 0;
+              const count = counts?.tags[item.id] ?? 0;
               return (
                 <Pressable
                   onPress={() => setSelectedTagId(active ? null : item.id)}
@@ -586,12 +588,12 @@ export default function InboxListScreen() {
         </View>
       )}
 
-      {archivedCount > 0 && (
+      {!!counts?.archived && (
         <Pressable style={styles.archivedRow} onPress={() => router.push('/inbox/archived')}>
           <Ionicons name="archive-outline" size={18} color={colors.textFaint} />
           <Text style={styles.archivedRowText}>Archived</Text>
           <View style={styles.archivedBadge}>
-            <Text style={styles.archivedBadgeText}>{archivedCount}</Text>
+            <Text style={styles.archivedBadgeText}>{counts.archived}</Text>
           </View>
         </Pressable>
       )}
