@@ -188,7 +188,7 @@ function WhatsappEmbeddedSignupContent() {
         config_id: CONFIG_ID,
         response_type: 'code',
         override_default_response_type: true,
-        extras: { sessionInfoVersion: '3' },
+        extras: { feature: 'whatsapp_embedded_signup', sessionInfoVersion: '3' },
       },
     );
   }
